@@ -1,14 +1,14 @@
 {
     "domain": "trafiklab",
     "name": "Trafiklab",
-    "codeowners": ["@MrSjodin"],
+    "codeowners": ["@vitords"],
     "config_flow": true,
     "dependencies": [],
-    "documentation": "https://github.com/MrSjodin/HomeAssistant_Trafiklab_Integration",
+    "documentation": "https://github.com/vitords/ha-trafiklab",
     "integration_type": "hub",
     "iot_class": "cloud_polling",
-    "issue_tracker": "https://github.com/MrSjodin/HomeAssistant_Trafiklab_Integration/issues",
+    "issue_tracker": "https://github.com/vitords/ha-trafiklab/issues",
     "quality_scale": "bronze",
     "requirements": [],
-    "version": "1.1.1-fork1"
+    "version": "1.1.1.1"
     }
