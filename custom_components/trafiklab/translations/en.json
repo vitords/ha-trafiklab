@@ -21,10 +21,36 @@
           "transport_modes": "Transport Mode(s) (leave empty for all)",
           "time_window": "Time Window (minutes ahead to search)",
           "refresh_interval": "Data Refresh Interval (seconds)",
-          "update_condition": "Update Condition (template; render to 'true' to fetch)"
+          "update_condition": "Update Condition (template; render to 'true' to fetch)",
+          "max_departures": "Max Departures default (1–100)",
+          "max_departures_bus": "Max Bus (0 = use default)",
+          "max_departures_metro": "Max Metro (0 = use default)",
+          "max_departures_train": "Max Train (0 = use default)",
+          "max_departures_tram": "Max Tram (0 = use default)",
+          "max_departures_boat": "Max Boat (0 = use default)",
+          "max_departures_by_direction": "Max Departures by Direction (e.g. 'söder:8, norr:8'; overrides mode limits above when set)",
+          "max_timetable_chunks": "Max API chunks per refresh (1–24)",
+          "night_gap_end_bus": "Bus dead zone start hour (0 = none)",
+          "night_gap_start_bus": "Bus service resumes hour",
+          "night_gap_end_metro": "Metro dead zone start hour (0 = none)",
+          "night_gap_start_metro": "Metro service resumes hour",
+          "night_gap_end_train": "Train dead zone start hour (0 = none)",
+          "night_gap_start_train": "Train service resumes hour",
+          "night_gap_end_tram": "Tram dead zone start hour (0 = none)",
+          "night_gap_start_tram": "Tram service resumes hour",
+          "night_gap_end_boat": "Boat dead zone start hour (0 = none)",
+          "night_gap_start_boat": "Boat service resumes hour"
         },
         "data_description": {
-          "transport_modes": "Leave empty to show all modes."
+          "transport_modes": "Leave empty to show all modes.",
+          "time_window": "Search ceiling in minutes ahead. Each API call covers 60 minutes; extra chunks are only fetched until departure limits are filled, an empty hour is reached, or max API chunks is hit. Monthly quota ≈ sensors × chunks × (2592000 / refresh_interval). At 60 or below, exactly one call is made per refresh and any night-service-gap setting is ignored (there's no room to skip ahead); set it higher than 60 if you want fetching to bridge a nightly gap and reach next-service departures.",
+          "refresh_interval": "How often to fetch. Prefer ≥300s when using multi-chunk windows. Doubling the interval halves monthly API usage.",
+          "max_departures": "Used as the overall cap when no per-mode overrides are set, and as the fallback for modes left at 0. Fetching stops early once these limits are filled.",
+          "max_departures_by_direction": "Optional 'token:count, token:count' list, matched as case-insensitive substrings against each departure's destination (same rule as the Destination Filter). Each direction gets its own independent quota — e.g. 'söder:8, norr:8' guarantees 8 of each regardless of how the other direction is served. When set, this replaces the per-mode limits above for this entry. Leave empty to keep using mode-based limits.",
+          "max_timetable_chunks": "Hard cap on Timetables API calls per refresh (each call = 60 minutes). Default 3. Lower this to protect your monthly quota.",
+          "update_condition": "Optional Jinja template; fetch only when it renders to 'true' (e.g. when someone is home). Skipped updates save quota.",
+          "night_gap_end_train": "Last service hour before the nightly gap (e.g. 2 = 02:00). Skips extra API calls during the gap when fetching extended time windows.",
+          "night_gap_start_train": "Hour when service resumes after the gap (e.g. 4 = 04:00). Must be greater than the dead zone start hour."
         }
       },
       "resrobot": {
@@ -59,10 +85,36 @@
           "transport_modes": "Transport Mode(s) (leave empty for all)",
           "time_window": "Time Window (minutes ahead to search)",
           "refresh_interval": "Data Refresh Interval (seconds)",
-          "update_condition": "Update Condition (template; render to 'true' to fetch)"
+          "update_condition": "Update Condition (template; render to 'true' to fetch)",
+          "max_departures": "Max Departures default (1–100)",
+          "max_departures_bus": "Max Bus (0 = use default)",
+          "max_departures_metro": "Max Metro (0 = use default)",
+          "max_departures_train": "Max Train (0 = use default)",
+          "max_departures_tram": "Max Tram (0 = use default)",
+          "max_departures_boat": "Max Boat (0 = use default)",
+          "max_departures_by_direction": "Max Departures by Direction (e.g. 'söder:8, norr:8'; overrides mode limits above when set)",
+          "max_timetable_chunks": "Max API chunks per refresh (1–24)",
+          "night_gap_end_bus": "Bus dead zone start hour (0 = none)",
+          "night_gap_start_bus": "Bus service resumes hour",
+          "night_gap_end_metro": "Metro dead zone start hour (0 = none)",
+          "night_gap_start_metro": "Metro service resumes hour",
+          "night_gap_end_train": "Train dead zone start hour (0 = none)",
+          "night_gap_start_train": "Train service resumes hour",
+          "night_gap_end_tram": "Tram dead zone start hour (0 = none)",
+          "night_gap_start_tram": "Tram service resumes hour",
+          "night_gap_end_boat": "Boat dead zone start hour (0 = none)",
+          "night_gap_start_boat": "Boat service resumes hour"
         },
         "data_description": {
-          "transport_modes": "Leave empty to show all modes."
+          "transport_modes": "Leave empty to show all modes.",
+          "time_window": "Search ceiling in minutes ahead. Each API call covers 60 minutes; extra chunks are only fetched until departure limits are filled, an empty hour is reached, or max API chunks is hit. Monthly quota ≈ sensors × chunks × (2592000 / refresh_interval). At 60 or below, exactly one call is made per refresh and any night-service-gap setting is ignored (there's no room to skip ahead); set it higher than 60 if you want fetching to bridge a nightly gap and reach next-service departures.",
+          "refresh_interval": "How often to fetch. Prefer ≥300s when using multi-chunk windows. Doubling the interval halves monthly API usage.",
+          "max_departures": "Used as the overall cap when no per-mode overrides are set, and as the fallback for modes left at 0. Fetching stops early once these limits are filled.",
+          "max_departures_by_direction": "Optional 'token:count, token:count' list, matched as case-insensitive substrings against each departure's destination (same rule as the Destination Filter). Each direction gets its own independent quota — e.g. 'söder:8, norr:8' guarantees 8 of each regardless of how the other direction is served. When set, this replaces the per-mode limits above for this entry. Leave empty to keep using mode-based limits.",
+          "max_timetable_chunks": "Hard cap on Timetables API calls per refresh (each call = 60 minutes). Default 3. Lower this to protect your monthly quota.",
+          "update_condition": "Optional Jinja template; fetch only when it renders to 'true' (e.g. when someone is home). Skipped updates save quota.",
+          "night_gap_end_train": "Last service hour before the nightly gap (e.g. 2 = 02:00). Skips extra API calls during the gap when fetching extended time windows.",
+          "night_gap_start_train": "Hour when service resumes after the gap (e.g. 4 = 04:00). Must be greater than the dead zone start hour."
         }
       },
       "reconfigure": {
@@ -109,6 +161,9 @@
       },
       "resrobot_travel": {
         "name": "Travel Search"
+      },
+      "api_requests_today": {
+        "name": "API Requests Today"
       }
     },
     "button": {
@@ -155,10 +210,36 @@
           "transport_modes": "Transport Mode(s) (leave empty for all)",
           "time_window": "Time Window (minutes ahead to search)",
           "refresh_interval": "Data Refresh Interval (seconds)",
-          "update_condition": "Update Condition (template; render to 'true' to fetch)"
+          "update_condition": "Update Condition (template; render to 'true' to fetch)",
+          "max_departures": "Max Departures default (1–100)",
+          "max_departures_bus": "Max Bus (0 = use default)",
+          "max_departures_metro": "Max Metro (0 = use default)",
+          "max_departures_train": "Max Train (0 = use default)",
+          "max_departures_tram": "Max Tram (0 = use default)",
+          "max_departures_boat": "Max Boat (0 = use default)",
+          "max_departures_by_direction": "Max Departures by Direction (e.g. 'söder:8, norr:8'; overrides mode limits above when set)",
+          "max_timetable_chunks": "Max API chunks per refresh (1–24)",
+          "night_gap_end_bus": "Bus dead zone start hour (0 = none)",
+          "night_gap_start_bus": "Bus service resumes hour",
+          "night_gap_end_metro": "Metro dead zone start hour (0 = none)",
+          "night_gap_start_metro": "Metro service resumes hour",
+          "night_gap_end_train": "Train dead zone start hour (0 = none)",
+          "night_gap_start_train": "Train service resumes hour",
+          "night_gap_end_tram": "Tram dead zone start hour (0 = none)",
+          "night_gap_start_tram": "Tram service resumes hour",
+          "night_gap_end_boat": "Boat dead zone start hour (0 = none)",
+          "night_gap_start_boat": "Boat service resumes hour"
         },
         "data_description": {
-          "transport_modes": "Leave empty to show all modes."
+          "transport_modes": "Leave empty to show all modes.",
+          "time_window": "Search ceiling in minutes ahead. Each API call covers 60 minutes; extra chunks are only fetched until departure limits are filled, an empty hour is reached, or max API chunks is hit. Monthly quota ≈ sensors × chunks × (2592000 / refresh_interval). At 60 or below, exactly one call is made per refresh and any night-service-gap setting is ignored (there's no room to skip ahead); set it higher than 60 if you want fetching to bridge a nightly gap and reach next-service departures.",
+          "refresh_interval": "How often to fetch. Prefer ≥300s when using multi-chunk windows. Doubling the interval halves monthly API usage.",
+          "max_departures": "Used as the overall cap when no per-mode overrides are set, and as the fallback for modes left at 0. Fetching stops early once these limits are filled.",
+          "max_departures_by_direction": "Optional 'token:count, token:count' list, matched as case-insensitive substrings against each departure's destination (same rule as the Destination Filter). Each direction gets its own independent quota — e.g. 'söder:8, norr:8' guarantees 8 of each regardless of how the other direction is served. When set, this replaces the per-mode limits above for this entry. Leave empty to keep using mode-based limits.",
+          "max_timetable_chunks": "Hard cap on Timetables API calls per refresh (each call = 60 minutes). Default 3. Lower this to protect your monthly quota.",
+          "update_condition": "Optional Jinja template; fetch only when it renders to 'true' (e.g. when someone is home). Skipped updates save quota.",
+          "night_gap_end_train": "Last service hour before the nightly gap (e.g. 2 = 02:00). Skips extra API calls during the gap when fetching extended time windows.",
+          "night_gap_start_train": "Hour when service resumes after the gap (e.g. 4 = 04:00). Must be greater than the dead zone start hour."
         }
       },
       "init_resrobot": {

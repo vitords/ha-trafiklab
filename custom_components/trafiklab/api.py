@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 
@@ -75,6 +75,18 @@ def _raise_realtime_error(
 
     message = error_detail or body_text or f"HTTP {status}"
 
+    # Quota / rate-limit — checked BEFORE the auth check. Trafiklab's quota
+    # error codes (e.g. "error.key.quota_exceeded") contain "key" just like
+    # its invalid-key codes ("error.key.invalid"), and both can surface as
+    # HTTP 403. Checking auth first would misclassify every quota exhaustion
+    # as an invalid API key (which then wrongly tells the user to reconfigure
+    # a new key instead of just waiting out the quota window). "quota"/"rate"
+    # substring matching against the free-text message (not just error_code)
+    # catches this even when Trafiklab only mentions it in prose.
+    combined = f"{error_code} {message}".lower()
+    if "quota" in combined or "rate" in combined or "limit" in combined or status == 429:
+        raise TrafikLabQuotaError(message, error_code=error_code or None, http_status=status)
+
     # Auth: explicit error code patterns OR 401/403
     if (
         "key" in error_code
@@ -83,10 +95,6 @@ def _raise_realtime_error(
         or status in (401, 403)
     ):
         raise TrafikLabAuthError(message, error_code=error_code or None, http_status=status)
-
-    # Quota / rate-limit
-    if "quota" in error_code or "rate" in error_code or "limit" in error_code or status == 429:
-        raise TrafikLabQuotaError(message, error_code=error_code or None, http_status=status)
 
     # Not found: explicit code or 404
     if "not_found" in error_code or "stop" in error_code or "location" in error_code or status == 404:
@@ -190,6 +198,7 @@ class TrafikLabApiClient:
         if products is not None:
             params["products"] = str(products)
 
+        self._record("resrobot_travel_search")
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
@@ -207,12 +216,33 @@ class TrafikLabApiClient:
             raise
         except aiohttp.ClientError as err:
             raise TrafikLabApiError(f"Resrobot request failed: {err}") from err
-    def __init__(self, api_key: str, session: aiohttp.ClientSession | None = None, timeout: int = 15) -> None:
-        """Initialize the API client."""
+    def __init__(
+        self,
+        api_key: str,
+        session: aiohttp.ClientSession | None = None,
+        timeout: int = 15,
+        on_request: Callable[[str], None] | None = None,
+    ) -> None:
+        """Initialize the API client.
+
+        ``on_request`` is invoked with an endpoint label right before each
+        real outgoing HTTP call — used to power the per-entry request
+        counters in ``request_stats.py``. Never lets a bad callback break
+        an API call.
+        """
         self.api_key = api_key
         self._session = session
         self._close_session = False
         self.timeout = timeout
+        self._on_request = on_request
+
+    def _record(self, endpoint: str) -> None:
+        if self._on_request is None:
+            return
+        try:
+            self._on_request(endpoint)
+        except Exception:  # pragma: no cover - tracking must never break a fetch
+            _LOGGER.debug("request tracker callback failed", exc_info=True)
 
     async def __aenter__(self) -> TrafikLabApiClient:
         """Async context manager entry."""
@@ -249,6 +279,7 @@ class TrafikLabApiClient:
         
         params = {"key": self.api_key}
 
+        self._record("departures")
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
@@ -282,6 +313,7 @@ class TrafikLabApiClient:
         
         params = {"key": self.api_key}
 
+        self._record("arrivals")
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
@@ -305,6 +337,7 @@ class TrafikLabApiClient:
         url = f"{API_BASE_URL}{STOP_LOOKUP_ENDPOINT}/{search_value}"
         params = {"key": self.api_key}
 
+        self._record("stop_lookup")
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
@@ -336,6 +369,7 @@ class TrafikLabApiClient:
             "input": search_value,
             "format": "json",
         }
+        self._record("resrobot_location")
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:

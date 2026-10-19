@@ -8,6 +8,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
     SensorDeviceClass,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME, UnitOfTime
@@ -23,12 +24,52 @@ from .const import (
     CONF_LINE_FILTER,
     CONF_MAX_TRIP_DURATION,
     CONF_TRANSPORT_MODES,
+    DEFAULT_TIME_WINDOW,
+    CONF_TIME_WINDOW,
     SENSOR_TYPE_ARRIVAL,
     SENSOR_TYPE_RESROBOT,
 )
 from .coordinator import TrafikLabCoordinator
+from .departure_limits import (
+    departure_targets_from_config,
+    direction_targets_from_config,
+    filter_timetable_items,
+    limit_items_by_direction as _limit_items_by_direction,
+    limit_items_by_mode as _limit_items_by_mode,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _notices_from_alerts(item: dict[str, Any]) -> list[str]:
+    """Extract human-readable notices from a departure/arrival alerts array.
+
+    The Realtime Timetables API exposes ``alerts`` as a list of
+    ``{type, title, text}`` objects. Empty / missing alerts yield ``[]``.
+    """
+    raw = item.get("alerts")
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        alerts = [raw]
+    elif isinstance(raw, list):
+        alerts = raw
+    else:
+        return [str(raw)]
+
+    notices: list[str] = []
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            if alert:
+                notices.append(str(alert))
+            continue
+        title = (alert.get("title") or "").strip()
+        text = (alert.get("text") or "").strip()
+        if title and text and text != title:
+            notices.append(f"{title}: {text}")
+        elif title or text:
+            notices.append(title or text)
+    return notices
 
 
 def _slugify(value: str) -> str:
@@ -78,7 +119,13 @@ async def async_setup_entry(
         description = SENSOR_DESCRIPTIONS[1]
     else:
         description = SENSOR_DESCRIPTIONS[0]
-    async_add_entities([TrafikLabSensor(coordinator, entry, description)], True)
+    async_add_entities(
+        [
+            TrafikLabSensor(coordinator, entry, description),
+            TrafikLabRequestsTodaySensor(coordinator, entry),
+        ],
+        True,
+    )
 
 
 class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
@@ -211,6 +258,13 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
         first_item = items[0]
         merged_cfg = {**self._entry.data, **self._entry.options}
         configured_direction = merged_cfg.get(CONF_DIRECTION, "")
+        max_deps, by_mode = departure_targets_from_config(merged_cfg)
+        _, by_direction = direction_targets_from_config(merged_cfg)
+        limited_items = (
+            _limit_items_by_direction(items, max_deps, by_direction)
+            if by_direction
+            else _limit_items_by_mode(items, max_deps, by_mode)
+        )
         attrs = {
             "line": (first_item.get("route") or {}).get("designation", ""),
             "destination": (first_item.get("route") or {}).get("direction", ""),
@@ -222,7 +276,7 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
             "delay": first_item.get("delay", 0),
             "canceled": first_item.get("canceled"),
             "platform": (first_item.get("realtime_platform") or {}).get("designation", ""),
-            "upcoming": self._build_upcoming_array(items[:10], configured_direction),
+            "upcoming": self._build_upcoming_array(limited_items),
             "attribution": "Data from Trafiklab.se",
             "last_update": getattr(self.coordinator, "last_successful_update", None),
             "integration": DOMAIN,
@@ -237,9 +291,7 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
             attrs["api_error_code"] = api_error.get("code")
             attrs["api_error_message"] = api_error.get("message")
 
-    def _build_upcoming_array(
-        self, items: list[dict], configured_direction: str
-    ) -> list[dict]:
+    def _build_upcoming_array(self, items: list[dict]) -> list[dict]:
         from datetime import datetime
 
         upcoming: list[dict] = []
@@ -260,34 +312,31 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
                     time_formatted = dt.strftime("%H:%M")
                 except Exception:  # pragma: no cover
                     pass
-            upcoming.append(
-                {
+            notices = _notices_from_alerts(item)
+            entry: dict = {
                     "index": idx,
                     "line": (item.get("route") or {}).get("designation", "") or "Unknown",
-                    "destination": (item.get("route") or {}).get("direction", "")
-                    or "Unknown",
-                    "direction": configured_direction,
-                    "scheduled_time": scheduled_time,
-                    "expected_time": realtime_time,
+                    "destination": (item.get("route") or {}).get("direction", "") or "Unknown",
                     "time_formatted": time_formatted,
                     "minutes_until": minutes_until,
-                    "transport_mode": (item.get("route") or {}).get("transport_mode", "")
-                    or "Unknown",
+                    "transport_mode": (item.get("route") or {}).get("transport_mode", "") or "Unknown",
                     "real_time": bool(item.get("is_realtime", False)),
-                    "delay": int(item.get("delay", 0)),
-                    "delay_minutes": int(item.get("delay", 0) / 60)
-                    if item.get("delay")
-                    else 0,
+                    "delay_minutes": int(item.get("delay", 0) / 60) if item.get("delay") else 0,
                     "canceled": bool(item.get("canceled")),
-                    "platform": (item.get("realtime_platform") or {})
-                    .get("designation", "")
-                    or (item.get("scheduled_platform") or {})
-                    .get("designation", ""),
-                    "route_name": (item.get("route") or {}).get("name", "") or "",
-                    "agency": (item.get("agency") or {}).get("name", "") or "",
+                    "platform": (item.get("realtime_platform") or {}).get("designation", "")
+                    or (item.get("scheduled_platform") or {}).get("designation", ""),
                     "trip_id": (item.get("trip") or {}).get("trip_id", "") or "",
+                    "has_notices": bool(notices),
                 }
-            )
+            if notices:
+                entry["notices"] = notices
+            agency = (item.get("agency") or {}).get("name", "")
+            if agency:
+                entry["agency"] = agency
+            route_name = (item.get("route") or {}).get("name", "")
+            if route_name:
+                entry["route_name"] = route_name
+            upcoming.append(entry)
         return upcoming
 
     @staticmethod
@@ -516,47 +565,97 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
             return []
         merged_cfg = {**self._entry.data, **self._entry.options}
         line_filter = (merged_cfg.get(CONF_LINE_FILTER) or "").strip()
-        _direction_raw = (merged_cfg.get(CONF_DIRECTION) or "")
-        direction_tokens = [t.strip().lower() for t in _direction_raw.split(",") if t.strip()]
-        line_set = (
-            {ln.strip() for ln in line_filter.split(",") if ln.strip()}
-            if line_filter
-            else None
+        direction_raw = merged_cfg.get(CONF_DIRECTION) or ""
+        transport_modes = merged_cfg.get(CONF_TRANSPORT_MODES) or []
+        filtered = filter_timetable_items(
+            raw_items,
+            line_filter=line_filter,
+            direction=direction_raw,
+            transport_modes=transport_modes,
         )
-        transport_mode_filter = {
-            m.upper()
-            for m in (merged_cfg.get(CONF_TRANSPORT_MODES) or [])
-            if m
-        }
+        time_window = int(merged_cfg.get(CONF_TIME_WINDOW, DEFAULT_TIME_WINDOW))
 
-        def match_line(item: dict) -> bool:
-            if not line_set:
+        def match_time_window(item: dict) -> bool:
+            departure_time = item.get("realtime") or item.get("scheduled") or ""
+            if not departure_time:
                 return True
-            designation = item.get("route", {}).get("designation", "")
-            return designation in line_set
+            try:
+                from datetime import datetime
 
-        def match_direction(item: dict) -> bool:
-            if not direction_tokens:
+                dt = datetime.fromisoformat(departure_time)
+                if dt.tzinfo is not None:
+                    now = datetime.now(dt.tzinfo)
+                else:
+                    now = datetime.now()
+                minutes_until = int((dt - now).total_seconds() / 60)
+                return 0 <= minutes_until <= time_window
+            except Exception:  # pragma: no cover
                 return True
-            destination = item.get("route", {}).get("direction", "")
-            dest_lower = destination.lower()
-            return any(tok in dest_lower for tok in direction_tokens)
 
-        def match_transport_mode(item: dict) -> bool:
-            if not transport_mode_filter:
-                return True
-            mode = (item.get("route") or {}).get("transport_mode", "").upper()
-            return mode in transport_mode_filter
-
-        filtered = [it for it in raw_items if match_line(it) and match_direction(it) and match_transport_mode(it)]
+        filtered = [it for it in filtered if match_time_window(it)]
         _LOGGER.debug(
             "Filtered %d -> %d items (lines=%s direction_substr='%s')",
             len(raw_items),
             len(filtered),
             line_filter or "*",
-            ",".join(direction_tokens) if direction_tokens else "*",
+            direction_raw or "*",
         )
         return filtered
+
+
+class TrafikLabRequestsTodaySensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
+    """Diagnostic sensor: real Trafiklab/Resrobot HTTP requests made by this entry.
+
+    Counts every actual outgoing HTTP call (timetable chunks, resrobot
+    searches, platform enrichment) regardless of whether it came from the
+    scheduled refresh, ``trafiklab.update_now``, or the update button — see
+    ``request_stats.py``. Counts persist across restarts and options reloads,
+    so tuning options in the UI won't reset today's count mid-debugging.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "api_requests_today"
+    _attr_icon = "mdi:counter"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(self, coordinator: TrafikLabCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_api_requests_today"
+        configured_name = (self._entry.data.get(CONF_NAME) or "").strip() or "trafiklab"
+        self._attr_suggested_object_id = f"trafiklab_{_slugify(configured_name)}_api_requests_today"
+
+    @property
+    def available(self) -> bool:
+        # Stay available even when the last data fetch failed — the request
+        # count itself is still valid and is often exactly what you want to
+        # see while an API error is happening.
+        return True
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": self._entry.data.get(CONF_NAME),
+            "manufacturer": "Trafiklab",
+            "model": "Public Transport",
+        }
+
+    @property
+    def native_value(self) -> int:
+        return self.coordinator.request_stats.today_value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        stats = self.coordinator.request_stats
+        return {
+            "total_since_install": stats.total,
+            "last_request_at": stats.last_request_at,
+            "last_endpoint": stats.last_endpoint,
+            "by_endpoint": dict(stats.by_endpoint),
+            "recent_requests": list(stats.recent),
+        }
 
 
 normalize_resrobot_trips = TrafikLabSensor._normalize_resrobot_trips
