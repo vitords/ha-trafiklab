@@ -126,7 +126,9 @@ async def async_setup_entry(
             TrafikLabSensor(coordinator, entry, description),
             TrafikLabRequestsTodaySensor(coordinator, entry),
         ],
-        True,
+        # The coordinator's first refresh is already scheduled in __init__;
+        # update_before_add=True would trigger a second, redundant API fetch.
+        False,
     )
 
 

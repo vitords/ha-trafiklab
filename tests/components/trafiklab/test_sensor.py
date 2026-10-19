@@ -14,7 +14,9 @@ from custom_components.trafiklab.const import DOMAIN
 
 
 @pytest.mark.asyncio
-async def test_sensor_setup_and_state_departure(hass: HomeAssistant, mock_departures_response) -> None:
+async def test_sensor_setup_and_state_departure(hass: HomeAssistant, mock_departures_response, freezer) -> None:
+    # Fixture departures are dated 2025-01-01; the time-window filter drops past items.
+    freezer.move_to("2025-01-01T12:00:00+00:00")
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={"api_key": "key", "stop_id": "740098000", "name": "Test Stop", "sensor_type": "departure"},
@@ -529,7 +531,7 @@ async def test_upcoming_exposes_route_and_trip_metadata(hass: HomeAssistant) -> 
     assert upcoming[0]["destination"] == "Olofström via Karlshamn"
     assert upcoming[0]["origin"] == "Kungsplan"
     assert upcoming[0]["final_destination"] == "Olofströms resecentrum"
-    assert upcoming[0]["trip_id"] == "trip_52"
+    assert upcoming[0]["trip_id"] == "trip_52_10"
     assert upcoming[0]["trip_start_date"] == "2026-09-25"
     assert upcoming[1]["origin"] == ""
     assert upcoming[1]["final_destination"] == ""
