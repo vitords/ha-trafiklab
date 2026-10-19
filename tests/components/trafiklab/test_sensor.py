@@ -304,6 +304,128 @@ async def test_resrobot_max_trip_duration_none_returns_all_trips(hass: HomeAssis
 
 
 # ---------------------------------------------------------------------------
+# Tests for realtime delay cross-check on Resrobot legs (include_platform)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_resrobot_leg_exposes_delay_and_native_value_uses_realtime_time(
+    hass: HomeAssistant,
+) -> None:
+    """A delay reported by the Timetable API shifts native_value and leg attributes."""
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    scheduled_dt = now + timedelta(minutes=10)
+    delayed_dt = now + timedelta(minutes=20)
+    scheduled_date, scheduled_time = scheduled_dt.strftime("%Y-%m-%d"), scheduled_dt.strftime("%H:%M:%S")
+
+    mock_resp = {
+        "Trip": [
+            {
+                "LegList": {
+                    "Leg": [
+                        {
+                            "type": "JNY",
+                            "number": "52",
+                            "Origin": {
+                                "name": "Stop A",
+                                "extId": "740000001",
+                                "date": scheduled_date,
+                                "time": scheduled_time,
+                            },
+                            "Destination": {
+                                "name": "Stop B",
+                                "date": scheduled_date,
+                                "time": (scheduled_dt + timedelta(minutes=20)).strftime("%H:%M:%S"),
+                            },
+                            "Product": {"name": "Bus 52", "num": "52"},
+                            "category": "BLT",
+                            "duration": "PT20M",
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    timetable_departures = {
+        "departures": [
+            {
+                "scheduled": scheduled_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                "realtime": delayed_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                "delay": 600,
+                "canceled": False,
+                "is_realtime": True,
+                "realtime_platform": {"designation": "3"},
+                "route": {"designation": "52"},
+            }
+        ]
+    }
+
+    dep_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "api_key": "realtime-key",
+            "stop_id": "740098000",
+            "name": "Dep Sensor",
+            "sensor_type": "departure",
+        },
+        options={},
+        unique_id="dep-for-delay-crosscheck",
+    )
+    dep_entry.add_to_hass(hass)
+    with patch(
+        "custom_components.trafiklab.coordinator.TrafikLabCoordinator._async_update_data",
+        return_value={},
+    ):
+        await hass.config_entries.async_setup(dep_entry.entry_id)
+        await hass.async_block_till_done()
+
+    resrobot_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "api_key": "resrobot-key",
+            "name": "Travel",
+            "sensor_type": "resrobot_travel_search",
+            "origin_type": "stop_id",
+            "origin": "740000001",
+            "destination_type": "stop_id",
+            "destination": "740000002",
+        },
+        # time_window=15 excludes the delayed (+20min) time but would include the scheduled (+10min) one
+        options={"time_window": 15, "refresh_interval": 300, "include_platform": True},
+        unique_id="resrobot-delay-crosscheck",
+    )
+    resrobot_entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_resrobot_travel_search",
+        return_value=mock_resp,
+    ), patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        return_value=timetable_departures,
+    ):
+        assert await hass.config_entries.async_setup(resrobot_entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{resrobot_entry.entry_id}_resrobot_travel")
+    assert entity_id is not None
+    state = hass.states.get(entity_id)
+
+    # native_value must use the realtime-adjusted (+20min) time, which falls outside the 15min window
+    assert state.state == "unknown"
+
+    leg = state.attributes["trips"][0]["legs"][0]
+    assert leg["real_time"] is True
+    assert leg["delay"] == 600
+    assert leg["canceled"] is False
+    assert leg["expected_time"] == delayed_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # Scheduled origin_time is left untouched by the cross-check
+    assert leg["origin_time"] == f"{scheduled_date} {scheduled_time}"
+
+
+# ---------------------------------------------------------------------------
 # Tests for transport_modes filter (Realtime / departure sensor)
 # ---------------------------------------------------------------------------
 
@@ -370,6 +492,48 @@ async def test_departure_sensor_filters_by_time_window(hass: HomeAssistant) -> N
     upcoming = hass.states.get(entity_id).attributes.get("upcoming", [])
     assert len(upcoming) == 1
     assert upcoming[0]["line"] == "40"
+
+
+@pytest.mark.asyncio
+async def test_upcoming_exposes_route_and_trip_metadata(hass: HomeAssistant) -> None:
+    populated_item = _make_departure_item("52", "BUS", "Olofström via Karlshamn")
+    populated_item["route"]["origin"] = {"name": "Kungsplan"}
+    populated_item["route"]["destination"] = {"name": "Olofströms resecentrum"}
+    populated_item["trip"]["start_date"] = "2026-09-25"
+    missing_metadata_item = _make_departure_item("53", "BUS")
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Metadata", "sensor_type": "departure"},
+        options={"time_window": 120, "refresh_interval": 300},
+        unique_id="upcoming_metadata",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        return_value={"departures": [populated_item, missing_metadata_item]},
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id(
+        "sensor", "trafiklab", f"{entry.entry_id}_next_departure"
+    )
+    assert entity_id is not None
+    upcoming = hass.states.get(entity_id).attributes["upcoming"]
+
+    assert upcoming[0]["destination"] == "Olofström via Karlshamn"
+    assert upcoming[0]["origin"] == "Kungsplan"
+    assert upcoming[0]["final_destination"] == "Olofströms resecentrum"
+    assert upcoming[0]["trip_id"] == "trip_52"
+    assert upcoming[0]["trip_start_date"] == "2026-09-25"
+    assert upcoming[1]["origin"] == ""
+    assert upcoming[1]["final_destination"] == ""
+    assert upcoming[1]["trip_start_date"] == ""
 
 
 @pytest.mark.asyncio
