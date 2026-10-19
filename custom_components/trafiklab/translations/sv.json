@@ -21,10 +21,36 @@
           "transport_modes": "Transportmedel (lämna tomt för alla)",
           "time_window": "Tidsfönster (minuter framåt att söka)",
           "refresh_interval": "Datauppdateringsintervall (sekunder)",
-          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)"
+          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)",
+          "max_departures": "Max avgångar standard (1–100)",
+          "max_departures_bus": "Max buss (0 = använd standard)",
+          "max_departures_metro": "Max tunnelbana (0 = använd standard)",
+          "max_departures_train": "Max tåg (0 = använd standard)",
+          "max_departures_tram": "Max spårvagn (0 = använd standard)",
+          "max_departures_boat": "Max båt (0 = använd standard)",
+          "max_departures_by_direction": "Max avgångar per riktning (t.ex. 'söder:8, norr:8'; åsidosätter läges-gränserna ovan när den är satt)",
+          "max_timetable_chunks": "Max API-chunkar per uppdatering (1–24)",
+          "night_gap_end_bus": "Buss dött fönster starttimme (0 = inget)",
+          "night_gap_start_bus": "Buss trafikstart timme",
+          "night_gap_end_metro": "Tunnelbana dött fönster starttimme (0 = inget)",
+          "night_gap_start_metro": "Tunnelbana trafikstart timme",
+          "night_gap_end_train": "Tåg dött fönster starttimme (0 = inget)",
+          "night_gap_start_train": "Tåg trafikstart timme",
+          "night_gap_end_tram": "Spårvagn dött fönster starttimme (0 = inget)",
+          "night_gap_start_tram": "Spårvagn trafikstart timme",
+          "night_gap_end_boat": "Båt dött fönster starttimme (0 = inget)",
+          "night_gap_start_boat": "Båt trafikstart timme"
         },
         "data_description": {
-          "transport_modes": "Lämna tomt för att visa alla transportmedel."
+          "transport_modes": "Lämna tomt för att visa alla transportmedel.",
+          "time_window": "Övre sökgräns i minuter framåt. Varje API-anrop täcker 60 minuter; fler chunkar hämtas bara tills avgångsgränserna är uppfyllda, en tom timme nås, eller max API-chunkar nås. Månadskvot ≈ sensorer × chunkar × (2592000 / uppdateringsintervall). Vid 60 eller lägre görs exakt ett anrop per uppdatering och en eventuell nattlucka ignoreras helt (det finns inget utrymme att hoppa framåt); sätt högre än 60 om hämtningen ska kunna hoppa över en nattlucka och nå nästa trafikstart.",
+          "refresh_interval": "Hur ofta data hämtas. Föredra ≥300s vid flera chunkar. Dubbelt intervall halverar månadsanvändningen.",
+          "max_departures": "Används som totalgräns när inga per-läge-gränser är satta, och som standard för lägen som lämnas på 0. Hämtning stoppas tidigt när gränserna är uppfyllda.",
+          "max_departures_by_direction": "Valfri lista 'token:antal, token:antal', matchad som skiftlägesokänslig delsträng mot varje avgångs destination (samma regel som destinationsfiltret). Varje riktning får sin egen oberoende kvot — t.ex. 'söder:8, norr:8' garanterar 8 av vardera oavsett hur den andra riktningen trafikeras. När den är satt ersätter den läges-gränserna ovan för denna post. Lämna tom för att fortsätta använda läges-baserade gränser.",
+          "max_timetable_chunks": "Hårt tak för Timetables-API-anrop per uppdatering (varje anrop = 60 minuter). Standard 3. Sänk för att skydda månadskvoten.",
+          "update_condition": "Valfri Jinja-mall; hämta bara när den renderar till 'true' (t.ex. när någon är hemma). Hoppade uppdateringar sparar kvot.",
+          "night_gap_end_train": "Sista timmen med trafik före nattuppehållet (t.ex. 2 = 02:00). Hoppar över extra API-anrop under uppehållet vid långa tidsfönster.",
+          "night_gap_start_train": "Timme när trafiken återupptas (t.ex. 4 = 04:00). Måste vara större än starttimmen för dött fönster."
         }
       },
       "resrobot": {
@@ -59,10 +85,36 @@
           "transport_modes": "Transportmedel (lämna tomt för alla)",
           "time_window": "Tidsfönster (minuter framåt att söka)",
           "refresh_interval": "Datauppdateringsintervall (sekunder)",
-          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)"
+          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)",
+          "max_departures": "Max avgångar standard (1–100)",
+          "max_departures_bus": "Max buss (0 = använd standard)",
+          "max_departures_metro": "Max tunnelbana (0 = använd standard)",
+          "max_departures_train": "Max tåg (0 = använd standard)",
+          "max_departures_tram": "Max spårvagn (0 = använd standard)",
+          "max_departures_boat": "Max båt (0 = använd standard)",
+          "max_departures_by_direction": "Max avgångar per riktning (t.ex. 'söder:8, norr:8'; åsidosätter läges-gränserna ovan när den är satt)",
+          "max_timetable_chunks": "Max API-chunkar per uppdatering (1–24)",
+          "night_gap_end_bus": "Buss dött fönster starttimme (0 = inget)",
+          "night_gap_start_bus": "Buss trafikstart timme",
+          "night_gap_end_metro": "Tunnelbana dött fönster starttimme (0 = inget)",
+          "night_gap_start_metro": "Tunnelbana trafikstart timme",
+          "night_gap_end_train": "Tåg dött fönster starttimme (0 = inget)",
+          "night_gap_start_train": "Tåg trafikstart timme",
+          "night_gap_end_tram": "Spårvagn dött fönster starttimme (0 = inget)",
+          "night_gap_start_tram": "Spårvagn trafikstart timme",
+          "night_gap_end_boat": "Båt dött fönster starttimme (0 = inget)",
+          "night_gap_start_boat": "Båt trafikstart timme"
         },
         "data_description": {
-          "transport_modes": "Lämna tomt för att visa alla transportmedel."
+          "transport_modes": "Lämna tomt för att visa alla transportmedel.",
+          "time_window": "Övre sökgräns i minuter framåt. Varje API-anrop täcker 60 minuter; fler chunkar hämtas bara tills avgångsgränserna är uppfyllda, en tom timme nås, eller max API-chunkar nås. Månadskvot ≈ sensorer × chunkar × (2592000 / uppdateringsintervall). Vid 60 eller lägre görs exakt ett anrop per uppdatering och en eventuell nattlucka ignoreras helt (det finns inget utrymme att hoppa framåt); sätt högre än 60 om hämtningen ska kunna hoppa över en nattlucka och nå nästa trafikstart.",
+          "refresh_interval": "Hur ofta data hämtas. Föredra ≥300s vid flera chunkar. Dubbelt intervall halverar månadsanvändningen.",
+          "max_departures": "Används som totalgräns när inga per-läge-gränser är satta, och som standard för lägen som lämnas på 0. Hämtning stoppas tidigt när gränserna är uppfyllda.",
+          "max_departures_by_direction": "Valfri lista 'token:antal, token:antal', matchad som skiftlägesokänslig delsträng mot varje avgångs destination (samma regel som destinationsfiltret). Varje riktning får sin egen oberoende kvot — t.ex. 'söder:8, norr:8' garanterar 8 av vardera oavsett hur den andra riktningen trafikeras. När den är satt ersätter den läges-gränserna ovan för denna post. Lämna tom för att fortsätta använda läges-baserade gränser.",
+          "max_timetable_chunks": "Hårt tak för Timetables-API-anrop per uppdatering (varje anrop = 60 minuter). Standard 3. Sänk för att skydda månadskvoten.",
+          "update_condition": "Valfri Jinja-mall; hämta bara när den renderar till 'true' (t.ex. när någon är hemma). Hoppade uppdateringar sparar kvot.",
+          "night_gap_end_train": "Sista timmen med trafik före nattuppehållet (t.ex. 2 = 02:00). Hoppar över extra API-anrop under uppehållet vid långa tidsfönster.",
+          "night_gap_start_train": "Timme när trafiken återupptas (t.ex. 4 = 04:00). Måste vara större än starttimmen för dött fönster."
         }
       },
       "reconfigure": {
@@ -109,6 +161,9 @@
       },
       "resrobot_travel": {
         "name": "Resesökning"
+      },
+      "api_requests_today": {
+        "name": "API-anrop idag"
       }
     },
     "button": {
@@ -155,10 +210,36 @@
           "transport_modes": "Transportmedel (lämna tomt för alla)",
           "time_window": "Tidsfönster (minuter framåt att söka)",
           "refresh_interval": "Datauppdateringsintervall (sekunder)",
-          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)"
+          "update_condition": "Uppdateringsvillkor (mall; rendera till 'true' för att hämta)",
+          "max_departures": "Max avgångar standard (1–100)",
+          "max_departures_bus": "Max buss (0 = använd standard)",
+          "max_departures_metro": "Max tunnelbana (0 = använd standard)",
+          "max_departures_train": "Max tåg (0 = använd standard)",
+          "max_departures_tram": "Max spårvagn (0 = använd standard)",
+          "max_departures_boat": "Max båt (0 = använd standard)",
+          "max_departures_by_direction": "Max avgångar per riktning (t.ex. 'söder:8, norr:8'; åsidosätter läges-gränserna ovan när den är satt)",
+          "max_timetable_chunks": "Max API-chunkar per uppdatering (1–24)",
+          "night_gap_end_bus": "Buss dött fönster starttimme (0 = inget)",
+          "night_gap_start_bus": "Buss trafikstart timme",
+          "night_gap_end_metro": "Tunnelbana dött fönster starttimme (0 = inget)",
+          "night_gap_start_metro": "Tunnelbana trafikstart timme",
+          "night_gap_end_train": "Tåg dött fönster starttimme (0 = inget)",
+          "night_gap_start_train": "Tåg trafikstart timme",
+          "night_gap_end_tram": "Spårvagn dött fönster starttimme (0 = inget)",
+          "night_gap_start_tram": "Spårvagn trafikstart timme",
+          "night_gap_end_boat": "Båt dött fönster starttimme (0 = inget)",
+          "night_gap_start_boat": "Båt trafikstart timme"
         },
         "data_description": {
-          "transport_modes": "Lämna tomt för att visa alla transportmedel."
+          "transport_modes": "Lämna tomt för att visa alla transportmedel.",
+          "time_window": "Övre sökgräns i minuter framåt. Varje API-anrop täcker 60 minuter; fler chunkar hämtas bara tills avgångsgränserna är uppfyllda, en tom timme nås, eller max API-chunkar nås. Månadskvot ≈ sensorer × chunkar × (2592000 / uppdateringsintervall). Vid 60 eller lägre görs exakt ett anrop per uppdatering och en eventuell nattlucka ignoreras helt (det finns inget utrymme att hoppa framåt); sätt högre än 60 om hämtningen ska kunna hoppa över en nattlucka och nå nästa trafikstart.",
+          "refresh_interval": "Hur ofta data hämtas. Föredra ≥300s vid flera chunkar. Dubbelt intervall halverar månadsanvändningen.",
+          "max_departures": "Används som totalgräns när inga per-läge-gränser är satta, och som standard för lägen som lämnas på 0. Hämtning stoppas tidigt när gränserna är uppfyllda.",
+          "max_departures_by_direction": "Valfri lista 'token:antal, token:antal', matchad som skiftlägesokänslig delsträng mot varje avgångs destination (samma regel som destinationsfiltret). Varje riktning får sin egen oberoende kvot — t.ex. 'söder:8, norr:8' garanterar 8 av vardera oavsett hur den andra riktningen trafikeras. När den är satt ersätter den läges-gränserna ovan för denna post. Lämna tom för att fortsätta använda läges-baserade gränser.",
+          "max_timetable_chunks": "Hårt tak för Timetables-API-anrop per uppdatering (varje anrop = 60 minuter). Standard 3. Sänk för att skydda månadskvoten.",
+          "update_condition": "Valfri Jinja-mall; hämta bara när den renderar till 'true' (t.ex. när någon är hemma). Hoppade uppdateringar sparar kvot.",
+          "night_gap_end_train": "Sista timmen med trafik före nattuppehållet (t.ex. 2 = 02:00). Hoppar över extra API-anrop under uppehållet vid långa tidsfönster.",
+          "night_gap_start_train": "Timme när trafiken återupptas (t.ex. 4 = 04:00). Måste vara större än starttimmen för dött fönster."
         }
       },
       "init_resrobot": {

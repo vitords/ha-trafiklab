@@ -43,7 +43,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Trafiklab from a config entry."""
     _LOGGER.info("[Trafiklab] Setting up config entry %s", entry.entry_id)
     coordinator = TrafikLabCoordinator(hass, entry)
-    
+    await coordinator.request_stats.async_load()
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 

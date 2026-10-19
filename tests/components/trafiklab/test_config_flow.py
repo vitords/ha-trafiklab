@@ -233,6 +233,163 @@ async def test_flow_departure_arrival_no_transport_modes_defaults_to_empty(hass:
 
 
 @pytest.mark.asyncio
+async def test_flow_departure_arrival_max_departures_stored_in_options(hass: HomeAssistant, enable_custom_integrations: None) -> None:
+    """max_departures selected in departure_arrival step must land in entry.options."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"sensor_type": "departure", "api_key": "key", "name": "More Deps"},
+    )
+
+    with patch("custom_components.trafiklab.config_flow.validate_input", return_value={"title": "More Deps"}), \
+         patch(_PATCH_COORDINATOR, return_value={}):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "stop_id": "740098002",
+                "line_filter": "",
+                "direction": "",
+                "time_window": 60,
+                "refresh_interval": 300,
+                "update_condition": "",
+                "max_departures": 25,
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert result["options"]["max_departures"] == 25
+
+
+@pytest.mark.asyncio
+async def test_flow_departure_arrival_max_departures_by_mode(hass: HomeAssistant, enable_custom_integrations: None) -> None:
+    """Per-mode max departure overrides must be stored as a mode→limit map."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"sensor_type": "departure", "api_key": "key", "name": "Per Mode"},
+    )
+
+    with patch("custom_components.trafiklab.config_flow.validate_input", return_value={"title": "Per Mode"}), \
+         patch(_PATCH_COORDINATOR, return_value={}):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "stop_id": "740098003",
+                "line_filter": "",
+                "direction": "",
+                "time_window": 60,
+                "refresh_interval": 300,
+                "update_condition": "",
+                "max_departures": 10,
+                "max_departures_train": 20,
+                "max_departures_bus": 10,
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert result["options"]["max_departures"] == 10
+    assert result["options"]["max_departures_by_mode"] == {"train": 20, "bus": 10}
+
+
+def test_pack_max_departures_by_mode_skips_zero_and_missing() -> None:
+    """Zero means unset; those modes must not appear in the stored map."""
+    from custom_components.trafiklab.config_flow import _pack_max_departures_by_mode
+
+    packed = _pack_max_departures_by_mode(
+        {
+            "max_departures_train": 20,
+            "max_departures_bus": 0,
+            "max_departures_metro": 0,
+        }
+    )
+    assert packed == {"train": 20}
+
+
+def test_pack_night_gap_by_mode_stores_valid_gaps_only() -> None:
+    from custom_components.trafiklab.config_flow import _pack_night_gap_by_mode
+
+    packed = _pack_night_gap_by_mode(
+        {
+            "night_gap_end_train": 2,
+            "night_gap_start_train": 4,
+            "night_gap_end_bus": 0,
+            "night_gap_start_bus": 4,
+            "night_gap_end_metro": 1,
+            "night_gap_start_metro": 1,
+        }
+    )
+    assert packed == {"train": {"end": 2, "start": 4}}
+
+
+@pytest.mark.asyncio
+async def test_flow_departure_arrival_max_timetable_chunks(
+    hass: HomeAssistant, enable_custom_integrations: None
+) -> None:
+    """max_timetable_chunks must be stored in entry options."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"sensor_type": "departure", "api_key": "key", "name": "Chunks"},
+    )
+
+    with patch(
+        "custom_components.trafiklab.config_flow.validate_input",
+        return_value={"title": "Chunks"},
+    ), patch(_PATCH_COORDINATOR, return_value={}):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "stop_id": "740098004",
+                "line_filter": "",
+                "direction": "",
+                "time_window": 180,
+                "refresh_interval": 300,
+                "update_condition": "",
+                "max_departures": 10,
+                "max_timetable_chunks": 2,
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert result["options"]["max_timetable_chunks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_options_flow_max_departures(hass: HomeAssistant, enable_custom_integrations: None) -> None:
+    """max_departures can be changed via the options flow."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k", "stop_id": "740098000", "name": "X", "sensor_type": "departure"},
+        options={"time_window": 30, "refresh_interval": 120, "update_condition": ""},
+        unique_id="uid_max_deps",
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "line_filter": "",
+            "direction": "",
+            "transport_modes": [],
+            "time_window": 30,
+            "refresh_interval": 120,
+            "update_condition": "",
+            "max_departures": 15,
+        },
+    )
+    assert result["type"] == "create_entry"
+    assert result["data"]["max_departures"] == 15
+
+
+@pytest.mark.asyncio
 async def test_options_flow_clear_line_filter(hass: HomeAssistant, enable_custom_integrations: None) -> None:
     """Clearing line_filter (setting it to empty) must persist as '' not revert to the old value."""
     entry = MockConfigEntry(

@@ -60,6 +60,13 @@ async def async_get_config_entry_diagnostics(
             "update_interval": str(coordinator.update_interval),
             "data_available": coordinator.data is not None,
         },
+        "request_stats": {
+            "today": coordinator.request_stats.today_value,
+            "total_since_install": coordinator.request_stats.total,
+            "by_endpoint": dict(coordinator.request_stats.by_endpoint),
+            "last_request_at": coordinator.request_stats.last_request_at,
+            "recent_requests": list(coordinator.request_stats.recent),
+        },
         "entities": {},
         "api_test": {},
     }

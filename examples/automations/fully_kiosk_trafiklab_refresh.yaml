@@ -1,0 +1,48 @@
+# Fully Kiosk adaptive Trafiklab refresh
+#
+# Prerequisites:
+# - Set each Trafiklab entry's refresh interval to 900 (15 minutes) for idle buffering
+# - Leave Update Condition empty so update_now and the coordinator both fetch
+#
+# Copy into automations.yaml (UI-managed list) or a labeled automation: block.
+# Modern HA YAML: triggers / conditions / actions
+# https://www.home-assistant.io/docs/automation/yaml/
+
+- id: trafiklab_fast_refresh_when_tablet_active
+  alias: Trafiklab fast refresh (Fully Kiosk)
+  description: >
+    Call trafiklab.update_now every minute while the Lenovo tab screensaver
+    is off (dashboard visible), and for 5 minutes after the screensaver
+    turns on (grace for motion gaps).
+  mode: single
+  triggers:
+    - trigger: time_pattern
+      minutes: "/1"
+  conditions:
+    - condition: template
+      value_template: >
+        {% set s = states.switch.lenovo_tab_screensaver %}
+        {% if s is none %}
+          false
+        {% elif s.state == 'off' %}
+          true
+        {% else %}
+          {{ (as_timestamp(now()) - as_timestamp(s.last_changed)) < 300 }}
+        {% endif %}
+  actions:
+    - action: trafiklab.update_now
+
+- id: trafiklab_refresh_on_tablet_wake
+  alias: Trafiklab refresh on tablet wake
+  description: >
+    Immediate refresh when the Fully Kiosk screensaver turns off
+    (dashboard becomes visible) so data is fresh without waiting
+    for the next minute tick or 15-minute coordinator poll.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: switch.lenovo_tab_screensaver
+      from: "on"
+      to: "off"
+  actions:
+    - action: trafiklab.update_now

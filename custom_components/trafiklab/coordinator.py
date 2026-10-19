@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,12 +17,22 @@ from .const import (
     CONF_STOP_ID,
     CONF_SENSOR_TYPE,
     CONF_REFRESH_INTERVAL,
+    CONF_TIME_WINDOW,
+    CONF_TRANSPORT_MODES,
+    CONF_NIGHT_GAP_BY_MODE,
+    CONF_MAX_TIMETABLE_CHUNKS,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_TIME_WINDOW,
+    DEFAULT_NIGHT_GAP_BY_MODE,
+    DEFAULT_MAX_TIMETABLE_CHUNKS,
+    MIN_MAX_TIMETABLE_CHUNKS,
+    MAX_MAX_TIMETABLE_CHUNKS,
+    TIMETABLE_API_WINDOW_MINUTES,
+    TRANSPORT_MODES,
     SENSOR_TYPE_ARRIVAL,
     SENSOR_TYPE_DEPARTURE,
     SENSOR_TYPE_RESROBOT,
     CONF_UPDATE_CONDITION,
-    CONF_TRANSPORT_MODES,
     RESROBOT_PRODUCTS_MAP,
     CONF_INCLUDE_PLATFORM,
     DOMAIN,
@@ -33,10 +44,165 @@ from .api import (
     TrafikLabQuotaError,
     TrafikLabServerError,
 )
+from .departure_limits import (
+    departure_targets_from_config,
+    departure_targets_satisfied,
+    departure_targets_satisfied_by_direction,
+    direction_targets_from_config,
+    filters_from_config,
+)
+from .request_stats import RequestStats
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.issue_registry as ir
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _merge_timetable_chunks(responses: list[dict], list_key: str) -> dict:
+    """Merge multiple Timetables API responses, deduplicating by trip + time."""
+    merged_items: list[dict] = []
+    seen: set[tuple] = set()
+    for response in responses:
+        for item in response.get(list_key) or []:
+            trip_id = item.get("trip_id") or (item.get("trip") or {}).get(
+                "trip_id"
+            )
+            key = (trip_id, item.get("scheduled"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_items.append(item)
+    merged_items.sort(
+        key=lambda item: item.get("realtime") or item.get("scheduled") or ""
+    )
+    base = dict(responses[0])
+    base[list_key] = merged_items
+    return base
+
+
+def _normalize_night_gap_by_mode(raw: Any) -> dict[str, tuple[int, int]]:
+    """Return mode→(end_hour, start_hour) gaps from stored options."""
+    if raw is None:
+        raw = DEFAULT_NIGHT_GAP_BY_MODE
+    if not isinstance(raw, dict):
+        return {
+            mode: (cfg["end"], cfg["start"])
+            for mode, cfg in DEFAULT_NIGHT_GAP_BY_MODE.items()
+        }
+
+    gaps: dict[str, tuple[int, int]] = {}
+    for mode, cfg in raw.items():
+        if mode not in TRANSPORT_MODES or not isinstance(cfg, dict):
+            continue
+        try:
+            end = int(cfg.get("end", 0))
+            start = int(cfg.get("start", 0))
+        except (TypeError, ValueError):
+            continue
+        if end > 0 and start > end:
+            gaps[mode] = (end, start)
+    return gaps
+
+
+def _effective_night_gap(
+    transport_modes: list[str] | None,
+    by_mode: dict[str, tuple[int, int]],
+) -> tuple[int, int] | None:
+    """Return the combined dead zone, or None when gap skipping does not apply."""
+    if transport_modes:
+        scope = transport_modes
+        gaps: list[tuple[int, int]] = []
+        for mode in scope:
+            gap = by_mode.get(mode)
+            if gap is None:
+                return None
+            gaps.append(gap)
+    else:
+        gaps = list(by_mode.values())
+        if not gaps:
+            return None
+
+    end_hour = max(end for end, _start in gaps)
+    start_hour = min(start for _end, start in gaps)
+    if end_hour >= start_hour:
+        return None
+    return end_hour, start_hour
+
+
+def _in_night_service_gap(dt: datetime, night_gap: tuple[int, int]) -> bool:
+    """Return True during the configured service gap."""
+    end_hour, start_hour = night_gap
+    return end_hour <= dt.hour < start_hour
+
+
+def _night_gap_resume(dt: datetime, night_gap: tuple[int, int]) -> datetime:
+    """Return the next service resume hour on the same calendar day as ``dt``."""
+    _end_hour, start_hour = night_gap
+    return dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+
+
+def _timetable_query_times(
+    now: datetime,
+    time_window_minutes: int,
+    *,
+    night_gap: tuple[int, int] | None,
+) -> list[datetime | None]:
+    """Build Timetables API query anchors for the configured time window."""
+    window = max(1, min(int(time_window_minutes), 1440))
+    desired_end = now + timedelta(minutes=window)
+
+    if not night_gap or window <= TIMETABLE_API_WINDOW_MINUTES:
+        query_times: list[datetime | None] = [None]
+        offset = TIMETABLE_API_WINDOW_MINUTES
+        while offset < window:
+            query_times.append(now + timedelta(minutes=offset))
+            offset += TIMETABLE_API_WINDOW_MINUTES
+        return query_times
+
+    queries: list[datetime | None] = []
+    seen_anchors: set[datetime] = set()
+
+    def add_query(anchor: datetime | None) -> None:
+        key = now if anchor is None else anchor
+        if key in seen_anchors:
+            return
+        seen_anchors.add(key)
+        queries.append(anchor)
+
+    if _in_night_service_gap(now, night_gap):
+        resume = _night_gap_resume(now, night_gap)
+        if resume > desired_end:
+            return [None]
+        add_query(resume)
+        cursor = resume
+    else:
+        add_query(None)
+        cursor = now
+
+    while True:
+        nxt = cursor + timedelta(minutes=TIMETABLE_API_WINDOW_MINUTES)
+        if nxt > desired_end:
+            break
+        if _in_night_service_gap(nxt, night_gap):
+            resume = _night_gap_resume(nxt, night_gap)
+            if resume > desired_end:
+                break
+            add_query(resume)
+            cursor = resume
+            continue
+        add_query(nxt)
+        cursor = nxt
+
+    return queries
+
+
+def _coerce_max_timetable_chunks(value: Any) -> int:
+    """Return a clamped max chunk count for Timetables API fetches."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_MAX_TIMETABLE_CHUNKS
+    return max(MIN_MAX_TIMETABLE_CHUNKS, min(MAX_MAX_TIMETABLE_CHUNKS, parsed))
 
 
 class TrafikLabCoordinator(DataUpdateCoordinator):
@@ -47,7 +213,15 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
         self.entry = entry
         # Use HA shared aiohttp session
         session = async_get_clientsession(hass)
-        self.api_client = TrafikLabApiClient(entry.data[CONF_API_KEY], session=session)
+        # Persisted per-entry counter of real outgoing HTTP requests — survives
+        # restarts and options-triggered reloads. Loaded async in __init__.py
+        # before the first refresh; see async_setup_entry.
+        self.request_stats = RequestStats(hass, entry.entry_id)
+        self.api_client = TrafikLabApiClient(
+            entry.data[CONF_API_KEY],
+            session=session,
+            on_request=self.request_stats.record,
+        )
         # Track last successful update (UTC ISO8601)
         self.last_successful_update: str | None = None
         # Track last API error (None when healthy)
@@ -184,11 +358,21 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
                 return data
             else:
                 stop_id = self.entry.data[CONF_STOP_ID]
-                _LOGGER.debug("Fetching %s for stop %s", sensor_type, stop_id)
-                if sensor_type == SENSOR_TYPE_ARRIVAL:
-                    data = await self.api_client.get_arrivals(stop_id)
-                else:
-                    data = await self.api_client.get_departures(stop_id)
+                merged_opts = {**self.entry.data, **self.entry.options}
+                time_window = int(
+                    merged_opts.get(CONF_TIME_WINDOW, DEFAULT_TIME_WINDOW)
+                )
+                _LOGGER.debug(
+                    "Fetching %s for stop %s (time_window=%d min)",
+                    sensor_type,
+                    stop_id,
+                    time_window,
+                )
+                data = await self._fetch_timetable(
+                    stop_id,
+                    arrivals=(sensor_type == SENSOR_TYPE_ARRIVAL),
+                    time_window_minutes=time_window,
+                )
                 if not data:
                     _LOGGER.warning("No data received from API")
                     raise UpdateFailed("No data received from API")
@@ -267,6 +451,102 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
             }
             _LOGGER.error("Unexpected error communicating with API: %s", err)
             raise UpdateFailed(f"Error communicating with API: {err}") from err
+
+    async def _fetch_timetable(
+        self,
+        stop_id: str,
+        *,
+        arrivals: bool,
+        time_window_minutes: int,
+    ) -> dict:
+        """Fetch departures/arrivals for the configured time window.
+
+        The Trafiklab Timetables API always returns 60 minutes per request.
+        When ``time_window_minutes`` exceeds that, additional requests are
+        made at +60, +120, … minute offsets and merged.
+
+        Fetching stops early when:
+        - configured departure limits are already filled, or
+        - a chunk returns no items, or
+        - ``max_timetable_chunks`` is reached.
+        """
+        fetch_fn = (
+            self.api_client.get_arrivals if arrivals else self.api_client.get_departures
+        )
+        list_key = "arrivals" if arrivals else "departures"
+        time_window = max(1, min(int(time_window_minutes), 1440))
+        merged_opts = {**self.entry.data, **self.entry.options}
+        transport_modes = merged_opts.get(CONF_TRANSPORT_MODES) or []
+        night_gap = _effective_night_gap(
+            transport_modes or None,
+            _normalize_night_gap_by_mode(merged_opts.get(CONF_NIGHT_GAP_BY_MODE)),
+        )
+        max_chunks = _coerce_max_timetable_chunks(
+            merged_opts.get(CONF_MAX_TIMETABLE_CHUNKS, DEFAULT_MAX_TIMETABLE_CHUNKS)
+        )
+        default_max, by_mode = departure_targets_from_config(merged_opts)
+        _, by_direction = direction_targets_from_config(merged_opts)
+        filter_kwargs = filters_from_config(merged_opts)
+
+        now = datetime.now().replace(second=0, microsecond=0)
+        query_times = _timetable_query_times(
+            now,
+            time_window,
+            night_gap=night_gap,
+        )[:max_chunks]
+
+        responses: list[dict] = []
+        for query_time in query_times:
+            if query_time is None:
+                chunk = await fetch_fn(stop_id)
+            else:
+                chunk = await fetch_fn(
+                    stop_id, query_time.strftime("%Y-%m-%dT%H:%M")
+                )
+            chunk_items = (chunk or {}).get(list_key) or []
+            if not chunk or not chunk_items:
+                _LOGGER.debug(
+                    "Timetable chunk empty at %s; stopping further fetches",
+                    query_time or "now",
+                )
+                if chunk:
+                    responses.append(chunk)
+                break
+
+            responses.append(chunk)
+            merged_so_far = _merge_timetable_chunks(responses, list_key)
+            merged_items = merged_so_far.get(list_key) or []
+            # Per-direction targets (when configured) take priority over
+            # per-mode ones — they're mutually exclusive concerns for a given
+            # entry: either you're capping by transport mode, or by direction.
+            targets_satisfied = (
+                departure_targets_satisfied_by_direction(
+                    merged_items, default_max, by_direction, **filter_kwargs
+                )
+                if by_direction
+                else departure_targets_satisfied(
+                    merged_items, default_max, by_mode, **filter_kwargs
+                )
+            )
+            if targets_satisfied:
+                _LOGGER.debug(
+                    "Departure limits filled after %d chunk(s); stopping further fetches",
+                    len(responses),
+                )
+                break
+
+        if not responses:
+            return {}
+
+        merged = _merge_timetable_chunks(responses, list_key)
+        _LOGGER.debug(
+            "Fetched %d timetable chunk(s)%s; merged to %d %s",
+            len(responses),
+            f" (night gap {night_gap[0]:02d}:00–{night_gap[1]:02d}:00)" if night_gap else "",
+            len(merged.get(list_key) or []),
+            list_key,
+        )
+        return merged
 
     def _normalize_resrobot_response(self, data: dict) -> dict:
         """Ensure ResRobot response has sorted trips and legs.
@@ -365,7 +645,9 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
             return data
 
         trips: list = (data or {}).get("Trip") or []
-        await enrich_platform_for_trips(trips, realtime_key, self.api_client.session)
+        await enrich_platform_for_trips(
+            trips, realtime_key, self.api_client.session, on_request=self.request_stats.record
+        )
         return data
 
 
@@ -387,6 +669,8 @@ async def enrich_platform_for_trips(
     trips: list,
     realtime_api_key: str,
     session,
+    *,
+    on_request=None,
 ) -> None:
     """Annotate public-transport legs in *trips* with ``_realtime_platform``.
 
@@ -438,7 +722,7 @@ async def enrich_platform_for_trips(
     # 2. Fetch Timetable departures for each unique stop concurrently
     #    (concurrency capped by semaphore to avoid request bursts)
     # ------------------------------------------------------------------
-    client = TrafikLabApiClient(realtime_api_key, session=session)
+    client = TrafikLabApiClient(realtime_api_key, session=session, on_request=on_request)
     semaphore = asyncio.Semaphore(_PLATFORM_ENRICH_CONCURRENCY)
 
     async def _fetch(stop_id: str, earliest: datetime):

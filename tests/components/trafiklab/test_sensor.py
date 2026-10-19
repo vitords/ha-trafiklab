@@ -307,10 +307,17 @@ async def test_resrobot_max_trip_duration_none_returns_all_trips(hass: HomeAssis
 # Tests for transport_modes filter (Realtime / departure sensor)
 # ---------------------------------------------------------------------------
 
-def _make_departure_item(designation: str, transport_mode: str, direction: str = "Centrum") -> dict:
+def _make_departure_item(
+    designation: str,
+    transport_mode: str,
+    direction: str = "Centrum",
+    *,
+    minutes_from_now: int = 10,
+) -> dict:
     """Build a minimal departure item for testing."""
     from datetime import datetime, timedelta
-    future = (datetime.now() + timedelta(minutes=10)).isoformat()
+
+    future = (datetime.now() + timedelta(minutes=minutes_from_now)).isoformat()
     return {
         "scheduled": future,
         "realtime": future,
@@ -326,8 +333,43 @@ def _make_departure_item(designation: str, transport_mode: str, direction: str =
             "name": f"Line {designation}",
         },
         "agency": {"name": "SL"},
-        "trip": {"trip_id": f"trip_{designation}"},
+        "trip": {"trip_id": f"trip_{designation}_{minutes_from_now}"},
     }
+
+
+@pytest.mark.asyncio
+async def test_departure_sensor_filters_by_time_window(hass: HomeAssistant) -> None:
+    """Departures outside the configured time_window must be excluded."""
+    items = [
+        _make_departure_item("40", "TRAIN", minutes_from_now=10),
+        _make_departure_item("41", "TRAIN", minutes_from_now=90),
+    ]
+    mock_response = {"departures": items}
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Window", "sensor_type": "departure"},
+        options={"time_window": 60, "refresh_interval": 300},
+        unique_id="time_window_filter",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        return_value=mock_response,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id(
+        "sensor", "trafiklab", f"{entry.entry_id}_next_departure"
+    )
+    upcoming = hass.states.get(entity_id).attributes.get("upcoming", [])
+    assert len(upcoming) == 1
+    assert upcoming[0]["line"] == "40"
 
 
 @pytest.mark.asyncio
@@ -412,6 +454,132 @@ async def test_departure_sensor_absent_transport_modes_key_returns_all(hass: Hom
     entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{entry.entry_id}_next_departure")
     attrs = hass.states.get(entity_id).attributes
     assert len(attrs.get("upcoming", [])) == 2
+
+
+@pytest.mark.asyncio
+async def test_departure_sensor_limits_upcoming_by_max_departures(hass: HomeAssistant) -> None:
+    """The upcoming attribute must be limited to max_departures from options."""
+    items = [_make_departure_item(str(i), "BUS") for i in range(15)]
+    mock_response = {"departures": items}
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Limited", "sensor_type": "departure"},
+        options={"max_departures": 5, "time_window": 120, "refresh_interval": 300},
+        unique_id="max_deps_limit",
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.trafiklab.api.TrafikLabApiClient.get_departures", return_value=mock_response):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{entry.entry_id}_next_departure")
+    attrs = hass.states.get(entity_id).attributes
+    assert len(attrs.get("upcoming", [])) == 5
+
+
+@pytest.mark.asyncio
+async def test_departure_sensor_default_max_departures_is_ten(hass: HomeAssistant) -> None:
+    """When max_departures is absent, upcoming defaults to 10 entries."""
+    items = [_make_departure_item(str(i), "BUS") for i in range(15)]
+    mock_response = {"departures": items}
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Default", "sensor_type": "departure"},
+        options={"time_window": 120, "refresh_interval": 300},
+        unique_id="max_deps_default",
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.trafiklab.api.TrafikLabApiClient.get_departures", return_value=mock_response):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{entry.entry_id}_next_departure")
+    attrs = hass.states.get(entity_id).attributes
+    assert len(attrs.get("upcoming", [])) == 10
+
+
+@pytest.mark.asyncio
+async def test_departure_sensor_has_notices_from_alerts(hass: HomeAssistant) -> None:
+    """API alerts must set has_notices and expose human-readable notices text."""
+    with_alert = _make_departure_item("52", "BUS")
+    with_alert["alerts"] = [
+        {
+            "type": "OTHER_CAUSE",
+            "title": "Kort tåg",
+            "text": "Tåget kör med två tågsätt istället för tre.",
+        }
+    ]
+    without_alert = _make_departure_item("4", "BUS")
+    without_alert["alerts"] = []
+    mock_response = {"departures": [with_alert, without_alert]}
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Notices", "sensor_type": "departure"},
+        options={"time_window": 120, "refresh_interval": 300},
+        unique_id="notices_alerts",
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.trafiklab.api.TrafikLabApiClient.get_departures", return_value=mock_response):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{entry.entry_id}_next_departure")
+    upcoming = hass.states.get(entity_id).attributes.get("upcoming", [])
+    assert len(upcoming) == 2
+    assert upcoming[0]["has_notices"] is True
+    assert upcoming[0]["notices"] == [
+        "Kort tåg: Tåget kör med två tågsätt istället för tre."
+    ]
+    assert upcoming[1]["has_notices"] is False
+    assert "notices" not in upcoming[1]
+
+
+@pytest.mark.asyncio
+async def test_departure_sensor_limits_per_transport_mode(hass: HomeAssistant) -> None:
+    """Per-mode max_departures_by_mode caps each mode independently."""
+    items = (
+        [_make_departure_item(f"T{i}", "TRAIN") for i in range(15)]
+        + [_make_departure_item(f"B{i}", "BUS") for i in range(15)]
+    )
+    mock_response = {"departures": items}
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "PerMode", "sensor_type": "departure"},
+        options={
+            "max_departures": 10,
+            "max_departures_by_mode": {"train": 5, "bus": 3},
+            "time_window": 120,
+            "refresh_interval": 300,
+        },
+        unique_id="max_deps_by_mode",
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.trafiklab.api.TrafikLabApiClient.get_departures", return_value=mock_response):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("sensor", "trafiklab", f"{entry.entry_id}_next_departure")
+    upcoming = hass.states.get(entity_id).attributes.get("upcoming", [])
+    modes = [row["transport_mode"].upper() for row in upcoming]
+    assert modes.count("TRAIN") == 5
+    assert modes.count("BUS") == 3
+    assert len(upcoming) == 8
 
 
 # ---------------------------------------------------------------------------

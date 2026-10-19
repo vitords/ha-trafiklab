@@ -15,6 +15,11 @@ CONF_SENSOR_TYPE: Final = "sensor_type"
 CONF_TIME_WINDOW: Final = "time_window"
 CONF_REFRESH_INTERVAL: Final = "refresh_interval"
 CONF_UPDATE_CONDITION: Final = "update_condition"
+CONF_MAX_DEPARTURES: Final = "max_departures"
+CONF_MAX_DEPARTURES_BY_MODE: Final = "max_departures_by_mode"
+CONF_MAX_DEPARTURES_BY_DIRECTION: Final = "max_departures_by_direction"
+CONF_NIGHT_GAP_BY_MODE: Final = "night_gap_by_mode"
+CONF_MAX_TIMETABLE_CHUNKS: Final = "max_timetable_chunks"
 CONF_NAME: Final = "name"
 # Resrobot-specific config keys
 CONF_ORIGIN_TYPE: Final = "origin_type"
@@ -40,7 +45,22 @@ DEFAULT_SCAN_INTERVAL: Final = 300  # 5 minutes in seconds
 MINIMUM_SCAN_INTERVAL: Final = 60   # 1 minute minimum
 DEFAULT_NAME: Final = "Trafiklab"
 DEFAULT_TIME_WINDOW: Final = 60  # minutes
+# Trafiklab Timetables API returns a fixed 60-minute window per request.
+TIMETABLE_API_WINDOW_MINUTES: Final = 60
+# SL bus/train night gap defaults (last departures ~02:00, first ~04:00).
+DEFAULT_NIGHT_GAP_END_HOUR: Final = 2
+DEFAULT_NIGHT_GAP_START_HOUR: Final = 4
+DEFAULT_NIGHT_GAP_BY_MODE: Final = {
+    "train": {"end": DEFAULT_NIGHT_GAP_END_HOUR, "start": DEFAULT_NIGHT_GAP_START_HOUR},
+    "bus": {"end": DEFAULT_NIGHT_GAP_END_HOUR, "start": DEFAULT_NIGHT_GAP_START_HOUR},
+}
 DEFAULT_UPDATE_CONDITION: Final = ""  # empty means always update
+DEFAULT_MAX_DEPARTURES: Final = 10
+MIN_MAX_DEPARTURES: Final = 1
+MAX_MAX_DEPARTURES: Final = 100
+DEFAULT_MAX_TIMETABLE_CHUNKS: Final = 3
+MIN_MAX_TIMETABLE_CHUNKS: Final = 1
+MAX_MAX_TIMETABLE_CHUNKS: Final = 24
 
 
 # API endpoints
@@ -54,13 +74,37 @@ RESROBOT_BASE_URL: Final = "https://api.resrobot.se/v2.1"
 RESROBOT_TRAVEL_SEARCH_ENDPOINT: Final = "/trip"
 RESROBOT_LOCATION_ENDPOINT: Final = "/location.name"
 
-# Transport modes
+# Transport modes (config key → API transport_mode value)
 TRANSPORT_MODES = {
     "bus": "BUS",
     "metro": "METRO",
     "train": "TRAIN",
     "tram": "TRAM",
-    "boat": "SHIP"
+    "boat": "SHIP",
+}
+
+# API transport_mode values → config key (includes common aliases)
+API_TRANSPORT_MODE_TO_KEY: dict[str, str] = {
+    "BUS": "bus",
+    "METRO": "metro",
+    "TRAIN": "train",
+    "TRAM": "tram",
+    "SHIP": "boat",
+    "BOAT": "boat",
+    "FERRY": "boat",
+}
+
+# Form field keys for optional per-mode departure limits
+CONF_MAX_DEPARTURES_MODE_FIELDS: dict[str, str] = {
+    mode: f"max_departures_{mode}" for mode in TRANSPORT_MODES
+}
+
+# Form field keys for optional per-mode night service gaps (hour 0–23)
+CONF_NIGHT_GAP_END_MODE_FIELDS: dict[str, str] = {
+    mode: f"night_gap_end_{mode}" for mode in TRANSPORT_MODES
+}
+CONF_NIGHT_GAP_START_MODE_FIELDS: dict[str, str] = {
+    mode: f"night_gap_start_{mode}" for mode in TRANSPORT_MODES
 }
 
 # Resrobot products bitmask per transport mode (request-side filtering)

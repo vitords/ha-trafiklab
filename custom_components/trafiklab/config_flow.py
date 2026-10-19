@@ -13,6 +13,9 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -38,8 +41,23 @@ from .const import (
     CONF_TIME_WINDOW,
     CONF_REFRESH_INTERVAL,
     CONF_UPDATE_CONDITION,
+    CONF_MAX_DEPARTURES,
+    CONF_MAX_DEPARTURES_BY_MODE,
+    CONF_MAX_DEPARTURES_BY_DIRECTION,
+    CONF_MAX_DEPARTURES_MODE_FIELDS,
+    CONF_NIGHT_GAP_BY_MODE,
+    CONF_NIGHT_GAP_END_MODE_FIELDS,
+    CONF_NIGHT_GAP_START_MODE_FIELDS,
+    CONF_MAX_TIMETABLE_CHUNKS,
+    DEFAULT_NIGHT_GAP_BY_MODE,
     DEFAULT_TIME_WINDOW,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_MAX_DEPARTURES,
+    DEFAULT_MAX_TIMETABLE_CHUNKS,
+    MIN_MAX_DEPARTURES,
+    MAX_MAX_DEPARTURES,
+    MIN_MAX_TIMETABLE_CHUNKS,
+    MAX_MAX_TIMETABLE_CHUNKS,
     MINIMUM_SCAN_INTERVAL,
     SENSOR_TYPE_DEPARTURE,
     SENSOR_TYPE_ARRIVAL,
@@ -59,6 +77,7 @@ from .const import (
     CONF_MAX_TRIP_DURATION,
     CONF_TRANSPORT_MODES,
     CONF_INCLUDE_PLATFORM,
+    TRANSPORT_MODES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,6 +118,170 @@ _LOCATION_TYPE_SELECTOR = SelectSelector(
     )
 )
 
+_MAX_DEPARTURES_SELECTOR = NumberSelector(
+    NumberSelectorConfig(
+        min=MIN_MAX_DEPARTURES,
+        max=MAX_MAX_DEPARTURES,
+        mode=NumberSelectorMode.BOX,
+        step=1,
+    )
+)
+
+# NumberSelector validates as float; coerce to int for storage/slicing.
+_MAX_DEPARTURES_SCHEMA = vol.All(_MAX_DEPARTURES_SELECTOR, vol.Coerce(int))
+
+_MAX_TIMETABLE_CHUNKS_SELECTOR = NumberSelector(
+    NumberSelectorConfig(
+        min=MIN_MAX_TIMETABLE_CHUNKS,
+        max=MAX_MAX_TIMETABLE_CHUNKS,
+        mode=NumberSelectorMode.BOX,
+        step=1,
+    )
+)
+_MAX_TIMETABLE_CHUNKS_SCHEMA = vol.All(_MAX_TIMETABLE_CHUNKS_SELECTOR, vol.Coerce(int))
+
+# Per-mode overrides use 0 as "unset" so Home Assistant always renders the fields.
+# (Optional NumberSelector fields with default=None are hidden in the config UI.)
+_OPTIONAL_MAX_DEPARTURES_SELECTOR = NumberSelector(
+    NumberSelectorConfig(
+        min=0,
+        max=MAX_MAX_DEPARTURES,
+        mode=NumberSelectorMode.BOX,
+        step=1,
+    )
+)
+_OPTIONAL_MAX_DEPARTURES_SCHEMA = vol.All(
+    _OPTIONAL_MAX_DEPARTURES_SELECTOR, vol.Coerce(int)
+)
+
+_MAX_DEPARTURES_MODE_SCHEMA: dict[Any, Any] = {
+    vol.Optional(field_key, default=0): _OPTIONAL_MAX_DEPARTURES_SCHEMA
+    for field_key in CONF_MAX_DEPARTURES_MODE_FIELDS.values()
+}
+
+_NIGHT_GAP_HOUR_SELECTOR = NumberSelector(
+    NumberSelectorConfig(
+        min=0,
+        max=23,
+        mode=NumberSelectorMode.BOX,
+        step=1,
+    )
+)
+_NIGHT_GAP_HOUR_SCHEMA = vol.All(_NIGHT_GAP_HOUR_SELECTOR, vol.Coerce(int))
+
+_NIGHT_GAP_FORM_DEFAULTS: dict[str, tuple[int, int]] = {
+    mode: (
+        DEFAULT_NIGHT_GAP_BY_MODE[mode]["end"],
+        DEFAULT_NIGHT_GAP_BY_MODE[mode]["start"],
+    )
+    if mode in DEFAULT_NIGHT_GAP_BY_MODE
+    else (0, 0)
+    for mode in TRANSPORT_MODES
+}
+
+_NIGHT_GAP_MODE_SCHEMA: dict[Any, Any] = {}
+for _mode, (_default_end, _default_start) in _NIGHT_GAP_FORM_DEFAULTS.items():
+    _NIGHT_GAP_MODE_SCHEMA[
+        vol.Optional(CONF_NIGHT_GAP_END_MODE_FIELDS[_mode], default=_default_end)
+    ] = _NIGHT_GAP_HOUR_SCHEMA
+    _NIGHT_GAP_MODE_SCHEMA[
+        vol.Optional(CONF_NIGHT_GAP_START_MODE_FIELDS[_mode], default=_default_start)
+    ] = _NIGHT_GAP_HOUR_SCHEMA
+
+
+def _pack_max_departures_by_mode(user_input: dict[str, Any]) -> dict[str, int]:
+    """Build the stored mode→limit map from flat form fields."""
+    by_mode: dict[str, int] = {}
+    for mode, field_key in CONF_MAX_DEPARTURES_MODE_FIELDS.items():
+        if field_key not in user_input:
+            continue
+        value = user_input.get(field_key)
+        if value is None:
+            continue
+        parsed = int(value)
+        if parsed <= 0:
+            continue
+        by_mode[mode] = parsed
+    return by_mode
+
+
+def _expand_max_departures_by_mode(values: dict[str, Any]) -> None:
+    """Expand stored mode→limit map into flat form fields for suggested values."""
+    by_mode = values.get(CONF_MAX_DEPARTURES_BY_MODE) or {}
+    if not isinstance(by_mode, dict):
+        by_mode = {}
+    for mode, field_key in CONF_MAX_DEPARTURES_MODE_FIELDS.items():
+        values[field_key] = by_mode.get(mode, 0)
+
+
+def _pack_night_gap_by_mode(user_input: dict[str, Any]) -> dict[str, dict[str, int]]:
+    """Build the stored mode→gap map from flat form fields."""
+    by_mode: dict[str, dict[str, int]] = {}
+    for mode in TRANSPORT_MODES:
+        end_key = CONF_NIGHT_GAP_END_MODE_FIELDS[mode]
+        start_key = CONF_NIGHT_GAP_START_MODE_FIELDS[mode]
+        if end_key not in user_input and start_key not in user_input:
+            continue
+        try:
+            end = int(user_input.get(end_key, 0))
+            start = int(user_input.get(start_key, 0))
+        except (TypeError, ValueError):
+            continue
+        if end <= 0 or start <= end:
+            continue
+        by_mode[mode] = {"end": end, "start": start}
+    return by_mode
+
+
+def _expand_night_gap_by_mode(values: dict[str, Any]) -> None:
+    """Expand stored mode→gap map into flat form fields for suggested values."""
+    by_mode = values.get(CONF_NIGHT_GAP_BY_MODE)
+    if by_mode is None:
+        for mode, (end, start) in _NIGHT_GAP_FORM_DEFAULTS.items():
+            values[CONF_NIGHT_GAP_END_MODE_FIELDS[mode]] = end
+            values[CONF_NIGHT_GAP_START_MODE_FIELDS[mode]] = start
+        return
+    if not isinstance(by_mode, dict):
+        by_mode = {}
+    for mode in TRANSPORT_MODES:
+        cfg = by_mode.get(mode) or {}
+        values[CONF_NIGHT_GAP_END_MODE_FIELDS[mode]] = int(cfg.get("end", 0))
+        values[CONF_NIGHT_GAP_START_MODE_FIELDS[mode]] = int(cfg.get("start", 0))
+
+
+def _departure_arrival_options_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Extract departure/arrival options from a form submission."""
+    return {
+        CONF_LINE_FILTER: user_input.get(CONF_LINE_FILTER, ""),
+        CONF_DIRECTION: user_input.get(CONF_DIRECTION, ""),
+        CONF_TRANSPORT_MODES: user_input.get(CONF_TRANSPORT_MODES, []),
+        CONF_TIME_WINDOW: user_input.get(CONF_TIME_WINDOW, DEFAULT_TIME_WINDOW),
+        CONF_REFRESH_INTERVAL: user_input.get(CONF_REFRESH_INTERVAL, DEFAULT_SCAN_INTERVAL),
+        CONF_UPDATE_CONDITION: user_input.get(CONF_UPDATE_CONDITION, ""),
+        CONF_MAX_DEPARTURES: user_input.get(CONF_MAX_DEPARTURES, DEFAULT_MAX_DEPARTURES),
+        CONF_MAX_DEPARTURES_BY_MODE: _pack_max_departures_by_mode(user_input),
+        CONF_MAX_DEPARTURES_BY_DIRECTION: user_input.get(CONF_MAX_DEPARTURES_BY_DIRECTION, ""),
+        CONF_NIGHT_GAP_BY_MODE: _pack_night_gap_by_mode(user_input),
+        CONF_MAX_TIMETABLE_CHUNKS: user_input.get(
+            CONF_MAX_TIMETABLE_CHUNKS, DEFAULT_MAX_TIMETABLE_CHUNKS
+        ),
+    }
+
+
+_DEPARTURE_ARRIVAL_OPTIONS_KEYS = (
+    CONF_LINE_FILTER,
+    CONF_DIRECTION,
+    CONF_TRANSPORT_MODES,
+    CONF_TIME_WINDOW,
+    CONF_REFRESH_INTERVAL,
+    CONF_UPDATE_CONDITION,
+    CONF_MAX_DEPARTURES,
+    CONF_MAX_DEPARTURES_BY_MODE,
+    CONF_MAX_DEPARTURES_BY_DIRECTION,
+    CONF_NIGHT_GAP_BY_MODE,
+    CONF_MAX_TIMETABLE_CHUNKS,
+)
+
 
 STEP_SENSOR_DATA_SCHEMA = vol.Schema(
     {
@@ -115,6 +298,13 @@ STEP_SENSOR_DATA_SCHEMA = vol.Schema(
     # New: Optional Jinja template string to decide whether to perform update. When template renders to 'true' (case-insensitive), update is performed.
     vol.Optional(CONF_UPDATE_CONDITION, default=""): str,
         vol.Optional(CONF_TRANSPORT_MODES, default=[]): _TRANSPORT_MODES_SELECTOR,
+        vol.Optional(CONF_MAX_DEPARTURES, default=DEFAULT_MAX_DEPARTURES): _MAX_DEPARTURES_SCHEMA,
+        **_MAX_DEPARTURES_MODE_SCHEMA,
+        vol.Optional(CONF_MAX_DEPARTURES_BY_DIRECTION, default=""): str,
+        vol.Optional(
+            CONF_MAX_TIMETABLE_CHUNKS, default=DEFAULT_MAX_TIMETABLE_CHUNKS
+        ): _MAX_TIMETABLE_CHUNKS_SCHEMA,
+        **_NIGHT_GAP_MODE_SCHEMA,
     }
 )
 
@@ -223,14 +413,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_NAME: self._name,
                     CONF_SENSOR_TYPE: self._sensor_type,
                 }
-                options_data = {
-                    CONF_LINE_FILTER: user_input.get(CONF_LINE_FILTER, ""),
-                    CONF_DIRECTION: user_input.get(CONF_DIRECTION, ""),
-                    CONF_TRANSPORT_MODES: user_input.get(CONF_TRANSPORT_MODES, []),
-                    CONF_TIME_WINDOW: user_input.get(CONF_TIME_WINDOW, DEFAULT_TIME_WINDOW),
-                    CONF_REFRESH_INTERVAL: user_input.get(CONF_REFRESH_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                    CONF_UPDATE_CONDITION: user_input.get(CONF_UPDATE_CONDITION, ""),
-                }
+                options_data = _departure_arrival_options_from_input(user_input)
                 unique_id = f"{self._stop_id}_{self._sensor_type}"
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
@@ -253,6 +436,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Coerce(int), vol.Range(min=MINIMUM_SCAN_INTERVAL, max=3600)
                 ),
                 vol.Optional(CONF_UPDATE_CONDITION, default=""): str,
+                vol.Optional(CONF_MAX_DEPARTURES, default=DEFAULT_MAX_DEPARTURES): _MAX_DEPARTURES_SCHEMA,
+                **_MAX_DEPARTURES_MODE_SCHEMA,
+                vol.Optional(CONF_MAX_DEPARTURES_BY_DIRECTION, default=""): str,
+                vol.Optional(
+                    CONF_MAX_TIMETABLE_CHUNKS, default=DEFAULT_MAX_TIMETABLE_CHUNKS
+                ): _MAX_TIMETABLE_CHUNKS_SCHEMA,
+                **_NIGHT_GAP_MODE_SCHEMA,
             }),
             errors=errors,
         )
@@ -378,14 +568,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_SENSOR_TYPE: user_input[CONF_SENSOR_TYPE],
             }
             # Mutable settings go to options to avoid redundancy
-            options_data = {
-                CONF_LINE_FILTER: user_input.get(CONF_LINE_FILTER, ""),
-                CONF_DIRECTION: user_input.get(CONF_DIRECTION, ""),
-                CONF_TRANSPORT_MODES: user_input.get(CONF_TRANSPORT_MODES, []),
-                CONF_TIME_WINDOW: user_input.get(CONF_TIME_WINDOW, DEFAULT_TIME_WINDOW),
-                CONF_REFRESH_INTERVAL: user_input.get(CONF_REFRESH_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                CONF_UPDATE_CONDITION: user_input.get(CONF_UPDATE_CONDITION, ""),
-            }
+            options_data = _departure_arrival_options_from_input(user_input)
 
             # Create a unique ID for this sensor configuration
             unique_id = f"{self._stop_id}_{user_input[CONF_SENSOR_TYPE]}"
@@ -546,7 +729,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return await self.async_step_init_resrobot(user_input)
 
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            merged_options = dict(self._entry.options)
+            for key in _DEPARTURE_ARRIVAL_OPTIONS_KEYS:
+                if key in (CONF_MAX_DEPARTURES_BY_MODE, CONF_NIGHT_GAP_BY_MODE):
+                    continue
+                if key in user_input:
+                    merged_options[key] = user_input[key]
+            merged_options[CONF_MAX_DEPARTURES_BY_MODE] = _pack_max_departures_by_mode(
+                user_input
+            )
+            merged_options[CONF_NIGHT_GAP_BY_MODE] = _pack_night_gap_by_mode(
+                user_input
+            )
+            return self.async_create_entry(title="", data=merged_options)
 
         schema = vol.Schema({
             vol.Optional(CONF_LINE_FILTER, default=""): str,
@@ -559,7 +754,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Coerce(int), vol.Range(min=MINIMUM_SCAN_INTERVAL, max=3600)
             ),
             vol.Optional(CONF_UPDATE_CONDITION, default=""): str,
+            vol.Optional(CONF_MAX_DEPARTURES, default=DEFAULT_MAX_DEPARTURES): _MAX_DEPARTURES_SCHEMA,
+            **_MAX_DEPARTURES_MODE_SCHEMA,
+            vol.Optional(CONF_MAX_DEPARTURES_BY_DIRECTION, default=""): str,
+            vol.Optional(
+                CONF_MAX_TIMETABLE_CHUNKS, default=DEFAULT_MAX_TIMETABLE_CHUNKS
+            ): _MAX_TIMETABLE_CHUNKS_SCHEMA,
+            **_NIGHT_GAP_MODE_SCHEMA,
         })
+
         current_values = {**self._entry.data, **self._entry.options}
         # Normalize transport_modes: old entries may lack the key, have None stored,
         # or contain values no longer in the valid set (e.g. the old "ship" key).
@@ -567,8 +770,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         # suggested_value; invalid/null elements cause "value must be one of [...]".
         current_values[CONF_TRANSPORT_MODES] = [
             m for m in (current_values.get(CONF_TRANSPORT_MODES) or [])
-            if isinstance(m, str) and m in {"bus", "metro", "train", "tram", "boat"}
+            if isinstance(m, str) and m in TRANSPORT_MODES
         ]
+        _expand_max_departures_by_mode(current_values)
+        _expand_night_gap_by_mode(current_values)
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(schema, current_values),
