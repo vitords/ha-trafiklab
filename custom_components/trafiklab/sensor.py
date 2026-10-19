@@ -23,7 +23,9 @@ from .const import (
     CONF_DIRECTION,
     CONF_LINE_FILTER,
     CONF_MAX_TRIP_DURATION,
+    CONF_MAX_RESULTS,
     CONF_TRANSPORT_MODES,
+    DEFAULT_MAX_RESULTS,
     DEFAULT_TIME_WINDOW,
     CONF_TIME_WINDOW,
     SENSOR_TYPE_ARRIVAL,
@@ -183,13 +185,14 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
             # Find first leg within time window from sorted trips/legs
             for trip in trips_sorted:
                 for leg in trip.get("legs", []):
-                    origin_time = leg.get("origin_time", "")
-                    if not origin_time:
+                    # Prefer realtime-adjusted time (cross-checked via include_platform) over scheduled
+                    departure_time = leg.get("expected_time") or leg.get("origin_time", "")
+                    if not departure_time:
                         continue
                     try:
                         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
                             try:
-                                dt = datetime.strptime(origin_time, fmt)
+                                dt = datetime.strptime(departure_time, fmt)
                                 break
                             except ValueError:
                                 dt = None
@@ -242,9 +245,11 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
             options_merged = {**self._entry.options, **self._entry.data}
             max_trip_duration: int | None = options_merged.get(CONF_MAX_TRIP_DURATION)
             trips_sorted = self._normalize_resrobot_trips(trips_raw, max_trip_duration)
+            max_results = int(options_merged.get(CONF_MAX_RESULTS) or DEFAULT_MAX_RESULTS)
+            trips_limited = trips_sorted[:max_results]
             attrs: dict[str, Any] = {
-                "num_trips": len(trips_sorted),
-                "trips": trips_sorted,
+                "num_trips": len(trips_limited),
+                "trips": trips_limited,
                 "attribution": "Data from Resrobot/Trafiklab.se",
                 "last_update": getattr(self.coordinator, "last_successful_update", None),
                 "integration": DOMAIN,
@@ -325,7 +330,10 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
                     "canceled": bool(item.get("canceled")),
                     "platform": (item.get("realtime_platform") or {}).get("designation", "")
                     or (item.get("scheduled_platform") or {}).get("designation", ""),
+                    "origin": ((item.get("route") or {}).get("origin") or {}).get("name", "") or "",
+                    "final_destination": ((item.get("route") or {}).get("destination") or {}).get("name", "") or "",
                     "trip_id": (item.get("trip") or {}).get("trip_id", "") or "",
+                    "trip_start_date": (item.get("trip") or {}).get("start_date", "") or "",
                     "has_notices": bool(notices),
                 }
             if notices:
@@ -462,9 +470,10 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
                 dur_iso = (leg or {}).get("duration") or ((leg or {}).get("GisRoute") or {}).get("durS")
                 duration_minutes = parse_iso_duration_minutes(dur_iso)
 
+                origin_time_str = f"{origin.get('date', '')} {origin.get('time', '')}".strip()
                 leg_dict = {
                     "origin_name": origin.get("name", ""),
-                    "origin_time": f"{origin.get('date', '')} {origin.get('time', '')}".strip(),
+                    "origin_time": origin_time_str,
                     "dest_name": dest.get("name", ""),
                     "dest_time": f"{dest.get('date', '')} {dest.get('time', '')}".strip(),
                     # Apply translation so 'type' is human readable (Public Transport/Transfer/Walk to/from)
@@ -478,6 +487,11 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
                     "category": category_full,
                     # Platform from Timetable API cross-check (empty when not enriched or no match)
                     "platform": leg.get("_realtime_platform", ""),
+                    # Realtime cross-check (falls back to scheduled origin_time when not enriched/no match)
+                    "expected_time": leg.get("_realtime_expected_time") or origin_time_str,
+                    "real_time": bool(leg.get("_is_realtime", False)),
+                    "delay": int(leg.get("_realtime_delay", 0) or 0),
+                    "canceled": bool(leg.get("_realtime_canceled", False)),
                 }
                 # attach parsed dt for sorting
                 leg_dt = parse_dt(origin.get("date", ""), origin.get("time", ""))

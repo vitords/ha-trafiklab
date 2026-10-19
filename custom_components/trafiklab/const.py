@@ -33,6 +33,8 @@ CONF_MAX_TRIP_DURATION: Final = "max_trip_duration"
 CONF_TRANSPORT_MODES: Final = "transport_modes"
 CONF_INCLUDE_PLATFORM: Final = "include_platform"
 CONF_REALTIME_API_KEY: Final = "realtime_api_key"
+# Shared config key: max number of departures/arrivals/trips to return
+CONF_MAX_RESULTS: Final = "max_results"
 
 
 # Sensor types
@@ -61,6 +63,7 @@ MAX_MAX_DEPARTURES: Final = 100
 DEFAULT_MAX_TIMETABLE_CHUNKS: Final = 3
 MIN_MAX_TIMETABLE_CHUNKS: Final = 1
 MAX_MAX_TIMETABLE_CHUNKS: Final = 24
+DEFAULT_MAX_RESULTS: Final = 10  # matches historical hardcoded limit
 
 
 # API endpoints
@@ -68,6 +71,7 @@ API_BASE_URL: Final = "https://realtime-api.trafiklab.se/v1"
 DEPARTURES_ENDPOINT: Final = "/departures"
 ARRIVALS_ENDPOINT: Final = "/arrivals"
 STOP_LOOKUP_ENDPOINT: Final = "/stops/name"
+TRIP_DETAILS_ENDPOINT: Final = "/trips"
 
 # Resrobot API
 RESROBOT_BASE_URL: Final = "https://api.resrobot.se/v2.1"
@@ -124,10 +128,14 @@ RESROBOT_PRODUCTS_MAP: dict[str, int] = {
 SERVICE_STOP_LOOKUP: Final = "stop_lookup"
 SERVICE_UPDATE_NOW: Final = "update_now"
 SERVICE_TRAVEL_SEARCH: Final = "travel_search"
+SERVICE_TRIP_DETAILS: Final = "trip_details"
 
 # Service fields
 ATTR_SEARCH_QUERY: Final = "search_query"
 ATTR_STOPS_FOUND: Final = "stops_found"
+ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
+ATTR_TRIP_ID: Final = "trip_id"
+ATTR_START_DATE: Final = "start_date"
 
 # Attributes
 ATTR_STOP_NAME: Final = "stop_name"
