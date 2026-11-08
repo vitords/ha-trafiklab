@@ -52,7 +52,7 @@ Copy `custom_components/trafiklab` into your Home Assistant `custom_components` 
 
 ### Prerequisites
 
-- Home Assistant 2024.8.0 or newer
+- Home Assistant 2024.8.0 or newer. Automated tests only run against a recent Home Assistant release, so older versions aren't tested and could break without notice.
 - A free API key from [Trafiklab](https://www.trafiklab.se/) for the Realtime API, and a separate one for Resrobot if you want Travel Search. Mind the default API quota.
 - Travel Search sensors cross-check delays against the Realtime API, so set up a Departures/Arrivals sensor first (its key is reused automatically).
 
