@@ -133,7 +133,8 @@ The `upcoming` attribute contains an array of upcoming departures/arrivals, limi
   "direction": "1",                     // User-configured direction filter
   "scheduled_time": "2025-08-08T14:30:00", // Raw scheduled time
   "expected_time": "2025-08-08T14:32:00",  // Raw real-time
-  "time_formatted": "14:32",            // Human-readable HH:MM
+  "time_formatted": "14:32",            // Human-readable HH:MM (real-time if available, else scheduled)
+  "scheduled_formatted": "14:30",       // Human-readable scheduled HH:MM
   "minutes_until": 15,                  // Integer minutes until departure
   "transport_mode": "BUS",              // Transport type
   "real_time": true,                    // Has real-time data

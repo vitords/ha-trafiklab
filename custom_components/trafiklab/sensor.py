@@ -261,7 +261,16 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
         # ...existing code for departure/arrival...
         items = self._get_data_items()
         if not items:
-            return {}
+            # A successful fetch with nothing to show still has a last_update, so
+            # consumers can tell "no departures" apart from "no data".
+            attrs = {
+                "upcoming": [],
+                "attribution": "Data from Trafiklab.se",
+                "last_update": getattr(self.coordinator, "last_successful_update", None),
+                "integration": DOMAIN,
+            }
+            self._inject_api_error(attrs)
+            return attrs
         first_item = items[0]
         merged_cfg = {**self._entry.data, **self._entry.options}
         configured_direction = merged_cfg.get(CONF_DIRECTION, "")
@@ -319,12 +328,19 @@ class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
                     time_formatted = dt.strftime("%H:%M")
                 except Exception:  # pragma: no cover
                     pass
+            scheduled_formatted = ""
+            if scheduled_time:
+                try:
+                    scheduled_formatted = datetime.fromisoformat(scheduled_time).strftime("%H:%M")
+                except Exception:  # pragma: no cover
+                    pass
             notices = _notices_from_alerts(item)
             entry: dict = {
                     "index": idx,
                     "line": (item.get("route") or {}).get("designation", "") or "Unknown",
                     "destination": (item.get("route") or {}).get("direction", "") or "Unknown",
                     "time_formatted": time_formatted,
+                    "scheduled_formatted": scheduled_formatted,
                     "minutes_until": minutes_until,
                     "transport_mode": (item.get("route") or {}).get("transport_mode", "") or "Unknown",
                     "real_time": bool(item.get("is_realtime", False)),

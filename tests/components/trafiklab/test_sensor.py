@@ -1007,3 +1007,59 @@ async def test_sensor_no_error_attributes_when_healthy(hass: HomeAssistant) -> N
     assert "api_error_code" not in attrs
     assert "api_error_message" not in attrs
 
+
+
+async def _setup_departure_sensor(hass: HomeAssistant, unique_id: str, response: dict) -> str:
+    """Set up a departure entry returning ``response`` and return its entity_id."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "key", "stop_id": "740098000", "name": "Stop", "sensor_type": "departure"},
+        options={"time_window": 120, "refresh_interval": 300},
+        unique_id=unique_id,
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        return_value=response,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "sensor", "trafiklab", f"{entry.entry_id}_next_departure"
+    )
+    assert entity_id is not None
+    return entity_id
+
+
+@pytest.mark.asyncio
+async def test_upcoming_exposes_scheduled_time_separately_from_realtime(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A delayed departure reports both its real-time and its scheduled HH:MM."""
+    freezer.move_to("2026-01-01T12:00:00+00:00")
+    item = _make_departure_item("41", "TRAIN")
+    item["scheduled"] = "2026-01-01T12:05:00+00:00"
+    item["realtime"] = "2026-01-01T12:08:00+00:00"
+    item["delay"] = 180
+
+    entity_id = await _setup_departure_sensor(hass, "scheduled_time", {"departures": [item]})
+
+    upcoming = hass.states.get(entity_id).attributes["upcoming"]
+    assert upcoming[0]["time_formatted"] == "12:08"
+    assert upcoming[0]["scheduled_formatted"] == "12:05"
+    assert upcoming[0]["delay_minutes"] == 3
+
+
+@pytest.mark.asyncio
+async def test_no_departures_keeps_last_update_and_empty_upcoming(hass: HomeAssistant) -> None:
+    """A successful fetch with no departures is distinguishable from having no data."""
+    entity_id = await _setup_departure_sensor(hass, "no_departures", {"departures": []})
+
+    state = hass.states.get(entity_id)
+    assert state.state == "unknown"
+    assert state.attributes["upcoming"] == []
+    assert state.attributes["last_update"] is not None
