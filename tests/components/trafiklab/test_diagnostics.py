@@ -33,7 +33,10 @@ async def test_diagnostics_redacts_api_key(hass: HomeAssistant) -> None:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    data = await diag.async_get_config_entry_diagnostics(hass, entry)
+        # Diagnostics runs a live API check, so it must stay inside the patch.
+        data = await diag.async_get_config_entry_diagnostics(hass, entry)
+
+    assert data["api_test"]["success"] is True
     # Confirm secret is redacted by diagnostics helper (accept common formats)
     assert data["config_entry"]["data"]["api_key"] in {"REDACTED", "**REDACTED**"}
     # Should include coordinator keys
