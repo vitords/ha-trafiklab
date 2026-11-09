@@ -10,7 +10,7 @@ pytest-homeassistant-custom-component==0.13.375
 # josepy 2.x removed ComparableX509; acme >=2.11.0 (up to <5.7.0) switched
 # to ComparableKey and is compatible with josepy 2.x.
 josepy<3.0.0
-acme<5.9.0
+acme<5.10.0
 
 # Code quality
 black>=26.10.1
