@@ -1,7 +1,7 @@
 from __future__ import annotations
 # pyright: reportMissingImports=false, reportGeneralTypeIssues=false
 import copy
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytest
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -567,7 +567,7 @@ async def test_coordinator_auth_error_sets_last_api_error_and_repair_issue(hass:
     # Setup with a successful mock to avoid ConfigEntryNotReady during first refresh
     with patch(
         "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
-        return_value={"departures": []},
+        return_value={"departures": [_dep("t1", "TRAIN", 5)]},
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -609,7 +609,7 @@ async def test_coordinator_success_clears_last_api_error_and_repair_issue(hass: 
     # Setup with success, then plant the auth error via a controlled refresh
     with patch(
         "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
-        return_value={"departures": []},
+        return_value={"departures": [_dep("t1", "TRAIN", 5)]},
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -656,7 +656,7 @@ async def test_coordinator_quota_error_sets_last_api_error_no_repair_issue(hass:
 
     with patch(
         "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
-        return_value={"departures": []},
+        return_value={"departures": [_dep("t1", "TRAIN", 5)]},
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -680,3 +680,201 @@ async def test_coordinator_quota_error_sets_last_api_error_no_repair_issue(hass:
     issue_id = f"invalid_api_key_{entry.entry_id}"
     assert issue_reg.async_get_issue(DOMAIN, issue_id) is None
 
+
+
+def _night_entry(unique_id: str, **options) -> MockConfigEntry:
+    return MockConfigEntry(
+        domain=DOMAIN,
+        data={"api_key": "k", "stop_id": "740098000", "name": "Night", "sensor_type": "departure"},
+        options={"time_window": 300, "refresh_interval": 3600, "max_timetable_chunks": 3, **options},
+        unique_id=unique_id,
+    )
+
+
+def _timetable_api(calls: list[str], departures: list[datetime]):
+    """Fake Timetables API serving 60 minutes from each query time."""
+
+    async def fetch(_stop_id: str, when: str | None = None) -> dict:
+        start = datetime.fromisoformat(when) if when else datetime.now()
+        calls.append(start.strftime("%H:%M"))
+        return {
+            "departures": [
+                {
+                    "scheduled": dep.isoformat(),
+                    "realtime": dep.isoformat(),
+                    "trip": {"trip_id": dep.isoformat()},
+                    "route": {"designation": "41", "direction": "X", "transport_mode": "TRAIN"},
+                }
+                for dep in departures
+                if start <= dep < start + timedelta(minutes=60)
+            ]
+        }
+
+    return fetch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now_time", "expected_calls"),
+    [
+        ("00:30", ["00:30", "01:30", "04:00"]),  # hour with the last train, then empty
+        ("01:20", ["01:20", "04:00", "05:00"]),  # already past the last train
+    ],
+)
+async def test_empty_hour_before_night_gap_continues_after_gap(
+    hass: HomeAssistant, freezer, now_time: str, expected_calls: list[str]
+) -> None:
+    """An empty hour running into the gap must not hide the morning's departures."""
+    freezer.move_to(f"2026-11-10T{now_time}:00")
+    entry = _night_entry(f"gap-{now_time}")
+    entry.add_to_hass(hass)
+    last_train = datetime(2026, 11, 10, 1, 12)
+    first_train = datetime(2026, 11, 10, 4, 3)
+    calls: list[str] = []
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, [last_train, first_train]),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert calls == expected_calls
+    scheduled = [d["scheduled"] for d in hass.data[DOMAIN][entry.entry_id].data["departures"]]
+    assert first_train.isoformat() in scheduled
+
+
+@pytest.mark.asyncio
+async def test_empty_hour_far_from_night_gap_still_stops(hass: HomeAssistant, freezer) -> None:
+    """A quiet hour in the daytime must not jump ahead to the next morning."""
+    freezer.move_to("2026-11-10T14:00:00")
+    entry = _night_entry("gap-daytime", time_window=1200, max_timetable_chunks=24)
+    entry.add_to_hass(hass)
+    calls: list[str] = []
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, [datetime(2026, 11, 11, 4, 3)]),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert calls == ["14:00"]
+
+
+async def _quiet_coordinator(hass: HomeAssistant, unique_id: str, calls: list[str], departures: list[datetime]):
+    entry = _night_entry(unique_id)
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, departures),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    calls.clear()
+    return hass.data[DOMAIN][entry.entry_id]
+
+
+@pytest.mark.asyncio
+async def test_quiet_period_limits_fetches_when_next_departure_is_far(hass: HomeAssistant, freezer) -> None:
+    """With nothing close, the API is only called every 30 minutes."""
+    freezer.move_to("2026-11-10T01:20:00")
+    calls: list[str] = []
+    departures = [datetime(2026, 11, 10, 4, 3)]
+    coordinator = await _quiet_coordinator(hass, "quiet-far", calls, departures)
+    fetched_at = coordinator.last_successful_update
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, departures),
+    ):
+        freezer.move_to("2026-11-10T01:49:00")
+        await coordinator.async_refresh()
+        assert calls == []
+        assert coordinator.last_successful_update == fetched_at
+        assert coordinator.last_update_success
+
+        freezer.move_to("2026-11-10T01:50:00")
+        await coordinator.async_refresh()
+        assert calls
+
+
+@pytest.mark.asyncio
+async def test_quiet_period_ends_within_an_hour_of_next_departure(hass: HomeAssistant, freezer) -> None:
+    """Normal refreshing resumes once the next departure is under 60 minutes away."""
+    freezer.move_to("2026-11-10T03:02:00")
+    calls: list[str] = []
+    departures = [datetime(2026, 11, 10, 4, 3)]
+    coordinator = await _quiet_coordinator(hass, "quiet-ends", calls, departures)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, departures),
+    ):
+        await coordinator.async_refresh()
+        assert calls == []
+
+        freezer.move_to("2026-11-10T03:04:00")
+        await coordinator.async_refresh()
+        assert calls
+
+
+@pytest.mark.asyncio
+async def test_quiet_period_ignores_departures_filtered_out_by_options(hass: HomeAssistant, freezer) -> None:
+    """A close departure on a filtered-out line must not end the quiet period."""
+    from custom_components.trafiklab.coordinator import TrafikLabCoordinator
+
+    freezer.move_to("2026-11-10T01:20:00")
+    entry = _night_entry("quiet-filter", line_filter="99")
+    entry.add_to_hass(hass)
+    coordinator = TrafikLabCoordinator(hass, entry)
+    coordinator.last_update_success = True
+    coordinator.last_successful_update = "2026-11-10T01:10:00+00:00"
+    close = (datetime(2026, 11, 10, 1, 25)).isoformat()
+    coordinator.data = {
+        "departures": [{"scheduled": close, "route": {"designation": "41", "transport_mode": "TRAIN"}}]
+    }
+
+    assert coordinator._in_quiet_period() is True
+
+
+@pytest.mark.asyncio
+async def test_quiet_period_does_not_hide_failures(hass: HomeAssistant, freezer) -> None:
+    """After a failed fetch, the next refresh must retry rather than report success."""
+    from custom_components.trafiklab.api import TrafikLabServerError
+
+    freezer.move_to("2026-11-10T01:20:00")
+    calls: list[str] = []
+    departures = [datetime(2026, 11, 10, 4, 3)]
+    coordinator = await _quiet_coordinator(hass, "quiet-failure", calls, departures)
+
+    coordinator.last_update_success = False
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=TrafikLabServerError("down", http_status=503),
+    ) as failing:
+        await coordinator.async_refresh()
+    assert failing.called
+    assert not coordinator.last_update_success
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_ignores_quiet_period_once(hass: HomeAssistant, freezer) -> None:
+    """A forced refresh always fetches, and later refreshes are limited again."""
+    freezer.move_to("2026-11-10T01:20:00")
+    calls: list[str] = []
+    departures = [datetime(2026, 11, 10, 4, 3)]
+    coordinator = await _quiet_coordinator(hass, "quiet-force", calls, departures)
+
+    with patch(
+        "custom_components.trafiklab.api.TrafikLabApiClient.get_departures",
+        side_effect=_timetable_api(calls, departures),
+    ):
+        await coordinator.async_force_refresh()
+        await hass.async_block_till_done()
+        assert calls
+
+        calls.clear()
+        await coordinator.async_refresh()
+        assert calls == []
+    coordinator._debounced_refresh.async_cancel()

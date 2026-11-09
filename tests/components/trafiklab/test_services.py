@@ -118,6 +118,40 @@ async def test_update_now_specific_entry(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_now_force_bypasses_quiet_period(hass: HomeAssistant) -> None:
+    """update_now only uses a forced refresh when force is set."""
+    from tests.components.trafiklab.const import ENTRY_DATA_DEPARTURE, ENTRY_OPTIONS_DEFAULT
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA_DEPARTURE,
+        options=ENTRY_OPTIONS_DEFAULT,
+        unique_id="test-update-force",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.trafiklab.coordinator.TrafikLabCoordinator._async_update_data",
+        return_value={},
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_force_refresh = AsyncMock()
+
+    await hass.services.async_call(DOMAIN, SERVICE_UPDATE_NOW, {}, blocking=True)
+    coordinator.async_request_refresh.assert_called_once()
+    coordinator.async_force_refresh.assert_not_called()
+
+    coordinator.async_request_refresh.reset_mock()
+    await hass.services.async_call(DOMAIN, SERVICE_UPDATE_NOW, {"force": True}, blocking=True)
+    coordinator.async_force_refresh.assert_called_once()
+    coordinator.async_request_refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_update_now_invalid_entry_id(hass: HomeAssistant, setup_integration: bool) -> None:
     """update_now with a non-existent entry_id raises HomeAssistantError."""
     with pytest.raises(HomeAssistantError):

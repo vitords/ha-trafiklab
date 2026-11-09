@@ -51,7 +51,7 @@ class TrafikLabUpdateButton(ButtonEntity):
         }
 
     async def async_press(self) -> None:
-        """Handle button press — request a debounced coordinator refresh."""
+        """Handle button press — always fetch, even in a quiet period."""
         _LOGGER.debug("[Trafiklab] Update now button pressed for entry %s", self._attr_unique_id)
-        await self._coordinator.async_request_refresh()
+        await self._coordinator.async_force_refresh()
 

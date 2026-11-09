@@ -19,7 +19,8 @@ On top of upstream, the Departures/Arrivals sensors have:
 
 - **Departure limits per transport mode** (bus, metro, train, tram, boat) and **per direction** (e.g. `söder:8, norr:8`), instead of a single result count
 - **Multi-chunk time windows**: windows longer than 60 minutes are fetched in chunks, capped by a configurable *max API chunks per refresh* to protect your API quota
-- **Night-gap handling**: configurable per-mode "dead zone" hours so a late-night query can skip ahead to the next morning's service
+- **Night-gap handling**: configurable per-mode "dead zone" hours so a late-night query can skip ahead to the next morning's service. The time window must reach past the gap to show those departures
+- **Quiet periods**: while the next departure is at least 60 minutes away, the API is called at most every 30 minutes (see [`update_now`](docs/reference.md#update-now-service))
 - **Request statistics**: counts of real HTTP requests per entry (today / total / per endpoint), exposed as a sensor and in diagnostics, to keep an eye on your quota
 - **Slimmer `upcoming` attributes** (optional fields such as notices, agency and route name are only included when present)
 - A [Fully Kiosk automation example](examples/automations/fully_kiosk_trafiklab_refresh.yaml) for refreshing faster only while a dashboard is visible

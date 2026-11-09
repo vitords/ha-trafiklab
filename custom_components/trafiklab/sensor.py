@@ -135,6 +135,9 @@ async def async_setup_entry(
 class TrafikLabSensor(CoordinatorEntity[TrafikLabCoordinator], SensorEntity):
     """Representation of a Trafiklab sensor."""
 
+    # Departure lists change on every refresh; don't write them to the database
+    _unrecorded_attributes = frozenset({"upcoming", "trips"})
+
     def __init__(
         self,
         coordinator: TrafikLabCoordinator,
@@ -650,6 +653,7 @@ class TrafikLabRequestsTodaySensor(CoordinatorEntity[TrafikLabCoordinator], Sens
     _attr_icon = "mdi:counter"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_entity_registry_enabled_default = True
+    _unrecorded_attributes = frozenset({"recent_requests", "by_endpoint"})
 
     def __init__(self, coordinator: TrafikLabCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)

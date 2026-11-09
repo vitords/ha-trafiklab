@@ -54,6 +54,7 @@ STOP_LOOKUP_SCHEMA = vol.Schema({
 
 UPDATE_NOW_SCHEMA = vol.Schema({
     vol.Optional("config_entry_id"): cv.string,
+    vol.Optional("force", default=False): cv.boolean,
 })
 
 TRAVEL_SEARCH_SCHEMA = vol.Schema({
@@ -364,7 +365,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def handle_update_now(call: ServiceCall) -> None:
         """Handle update_now service call."""
         entry_id: str | None = call.data.get("config_entry_id")
+        force: bool = call.data["force"]
         domain_data: dict = hass.data.get(DOMAIN, {})
+
+        async def _refresh(coordinator: Any) -> None:
+            if force:
+                await coordinator.async_force_refresh()
+            else:
+                await coordinator.async_request_refresh()
 
         if entry_id is not None:
             coordinator = domain_data.get(entry_id)
@@ -372,10 +380,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 raise HomeAssistantError(
                     f"No active Trafiklab config entry with id '{entry_id}'"
                 )
-            await coordinator.async_request_refresh()
+            await _refresh(coordinator)
         else:
             for coordinator in domain_data.values():
-                await coordinator.async_request_refresh()
+                await _refresh(coordinator)
 
     hass.services.async_register(
         DOMAIN,

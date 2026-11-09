@@ -42,7 +42,7 @@ async def test_button_entity_created(hass: HomeAssistant) -> None:
 
 @pytest.mark.asyncio
 async def test_button_press_triggers_refresh(hass: HomeAssistant) -> None:
-    """Pressing the button calls async_request_refresh on the coordinator."""
+    """Pressing the button always fetches, even in a quiet period."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=ENTRY_DATA_DEPARTURE,
@@ -59,7 +59,7 @@ async def test_button_press_triggers_refresh(hass: HomeAssistant) -> None:
         await hass.async_block_till_done()
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_force_refresh = AsyncMock()
 
     ent_reg = er.async_get(hass)
     entity_id = ent_reg.async_get_entity_id("button", DOMAIN, f"{entry.entry_id}_update_now")
@@ -72,4 +72,4 @@ async def test_button_press_triggers_refresh(hass: HomeAssistant) -> None:
         blocking=True,
     )
 
-    coordinator.async_request_refresh.assert_called_once()
+    coordinator.async_force_refresh.assert_called_once()

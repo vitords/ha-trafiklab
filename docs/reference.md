@@ -267,7 +267,9 @@ If an error occurs (bad API key, unresolvable stop name, etc.) the response cont
 
 ### Update Now Service
 
-Force an immediate data refresh for one or all configured sensors. Useful in automations that react to events (arrivals home, alarm clock, etc.) and need fresh data right away.
+Refresh one or all configured sensors. Useful in automations that react to events (arrivals home, alarm clock, etc.) and need fresh data right away.
+
+While the next departure is at least 60 minutes away, for example during the night gap, a refresh only calls the API if the last fetch was at least 30 minutes ago. This keeps frequent automations from using up your quota overnight, and also applies to scheduled refreshes. Countdowns stay correct in the meantime. To always call the API, set `force: true` or press the sensor's Update button.
 
 ```yaml
 # Refresh all Trafiklab sensors at once
@@ -279,6 +281,13 @@ service: trafiklab.update_now
 service: trafiklab.update_now
 data:
   config_entry_id: "your_entry_id"
+```
+
+```yaml
+# Always call the API, even if the next departure is far away
+service: trafiklab.update_now
+data:
+  force: true
 ```
 
 The `config_entry_id` is shown in **Settings → Devices & Services → Trafiklab → (entry) → Info**. Omit it to refresh every active Trafiklab entry.

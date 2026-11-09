@@ -64,6 +64,9 @@ DEFAULT_MAX_TIMETABLE_CHUNKS: Final = 3
 MIN_MAX_TIMETABLE_CHUNKS: Final = 1
 MAX_MAX_TIMETABLE_CHUNKS: Final = 24
 DEFAULT_MAX_RESULTS: Final = 10  # matches historical hardcoded limit
+# Fetch less often while nothing is about to leave, e.g. during the night gap.
+QUIET_NEXT_DEPARTURE_MINUTES: Final = 60
+QUIET_REFRESH_MINUTES: Final = 30
 
 
 # API endpoints

@@ -1063,3 +1063,43 @@ async def test_no_departures_keeps_last_update_and_empty_upcoming(hass: HomeAssi
     assert state.state == "unknown"
     assert state.attributes["upcoming"] == []
     assert state.attributes["last_update"] is not None
+
+
+@pytest.mark.asyncio
+async def test_bulky_attributes_are_not_recorded(hass: HomeAssistant) -> None:
+    """Departure lists and request logs must stay out of the recorder database."""
+    from homeassistant.helpers import entity_registry as er
+
+    item = _make_departure_item("41", "TRAIN")
+    entity_id = await _setup_departure_sensor(hass, "unrecorded", {"departures": [item]})
+
+    assert "upcoming" in hass.states.get(entity_id).attributes
+    assert {"upcoming", "trips"} <= hass.states.get(entity_id).state_info["unrecorded_attributes"]
+
+    entry_id = er.async_get(hass).async_get(entity_id).config_entry_id
+    requests_id = er.async_get(hass).async_get_entity_id(
+        "sensor", "trafiklab", f"{entry_id}_api_requests_today"
+    )
+    assert {"recent_requests", "by_endpoint"} <= hass.states.get(requests_id).state_info["unrecorded_attributes"]
+
+
+@pytest.mark.asyncio
+async def test_countdown_keeps_updating_when_fetch_is_skipped(hass: HomeAssistant, freezer) -> None:
+    """A skipped fetch still recalculates minutes_until from the data it has."""
+    freezer.move_to("2026-11-10T01:20:00")
+    item = _make_departure_item("41", "TRAIN", minutes_from_now=100)
+
+    entity_id = await _setup_departure_sensor(hass, "skip-countdown", {"departures": [item]})
+    assert hass.states.get(entity_id).attributes["upcoming"][0]["minutes_until"] == 100
+    last_update = hass.states.get(entity_id).attributes["last_update"]
+
+    freezer.move_to("2026-11-10T01:30:00")
+    from homeassistant.helpers import entity_registry as er
+
+    entry_id = er.async_get(hass).async_get(entity_id).config_entry_id
+    await hass.data[DOMAIN][entry_id].async_refresh()
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state.attributes["upcoming"][0]["minutes_until"] == 90
+    assert state.attributes["last_update"] == last_update

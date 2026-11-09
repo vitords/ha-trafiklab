@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -25,6 +25,8 @@ from .const import (
     DEFAULT_TIME_WINDOW,
     DEFAULT_NIGHT_GAP_BY_MODE,
     DEFAULT_MAX_TIMETABLE_CHUNKS,
+    QUIET_NEXT_DEPARTURE_MINUTES,
+    QUIET_REFRESH_MINUTES,
     MIN_MAX_TIMETABLE_CHUNKS,
     MAX_MAX_TIMETABLE_CHUNKS,
     TIMETABLE_API_WINDOW_MINUTES,
@@ -49,6 +51,7 @@ from .departure_limits import (
     departure_targets_satisfied,
     departure_targets_satisfied_by_direction,
     direction_targets_from_config,
+    filter_timetable_items,
     filters_from_config,
 )
 from .request_stats import RequestStats
@@ -196,6 +199,33 @@ def _timetable_query_times(
     return queries
 
 
+def _anchor_index_after_gap(
+    anchors: list[datetime | None],
+    start_index: int,
+    chunk_start: datetime,
+    night_gap: tuple[int, int] | None,
+) -> int | None:
+    """Return the first anchor after the gap if an empty chunk runs into that gap.
+
+    An empty hour just before the gap means today's service is over, not that the
+    timetable has ended. Empty hours earlier in the day still stop the fetch.
+    """
+    if not night_gap:
+        return None
+    end_hour, start_hour = night_gap
+    gap_start = chunk_start.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+    if chunk_start >= gap_start:
+        gap_start += timedelta(days=1)
+    if chunk_start + timedelta(minutes=TIMETABLE_API_WINDOW_MINUTES) < gap_start:
+        return None
+    resume = gap_start.replace(hour=start_hour)
+    for index in range(start_index, len(anchors)):
+        anchor = anchors[index]
+        if anchor is not None and anchor >= resume:
+            return index
+    return None
+
+
 def _coerce_max_timetable_chunks(value: Any) -> int:
     """Return a clamped max chunk count for Timetables API fetches."""
     try:
@@ -226,6 +256,8 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
         self.last_successful_update: str | None = None
         # Track last API error (None when healthy)
         self.last_api_error: dict | None = None
+        # Set by async_force_refresh; makes the next update ignore the quiet period
+        self._force_next_fetch = False
 
         # Options override data if present
         refresh_interval = entry.options.get(
@@ -240,8 +272,52 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=refresh_interval),
         )
 
+    async def async_force_refresh(self) -> None:
+        """Request a refresh that always fetches, even in a quiet period."""
+        self._force_next_fetch = True
+        await self.async_request_refresh()
+
+    def _next_departure_minutes(self) -> float | None:
+        """Return minutes until the next matching departure/arrival, if any."""
+        sensor_type = self.entry.data.get(CONF_SENSOR_TYPE, SENSOR_TYPE_DEPARTURE)
+        list_key = "arrivals" if sensor_type == SENSOR_TYPE_ARRIVAL else "departures"
+        merged_opts = {**self.entry.data, **self.entry.options}
+        items = filter_timetable_items(
+            (self.data or {}).get(list_key) or [],
+            **filters_from_config(merged_opts),
+        )
+        upcoming: list[float] = []
+        for item in items:
+            try:
+                when = datetime.fromisoformat(item.get("realtime") or item.get("scheduled") or "")
+            except ValueError:
+                continue
+            minutes = (when - datetime.now(when.tzinfo)).total_seconds() / 60
+            if minutes >= 0:
+                upcoming.append(minutes)
+        return min(upcoming, default=None)
+
+    def _in_quiet_period(self) -> bool:
+        """Return True when the current data is recent and nothing is about to leave."""
+        if (
+            self.entry.data.get(CONF_SENSOR_TYPE) == SENSOR_TYPE_RESROBOT
+            or not self.last_update_success
+            or not self.data
+            or not self.last_successful_update
+        ):
+            return False
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(self.last_successful_update)
+        if age >= timedelta(minutes=QUIET_REFRESH_MINUTES):
+            return False
+        next_departure = self._next_departure_minutes()
+        return next_departure is None or next_departure >= QUIET_NEXT_DEPARTURE_MINUTES
+
     async def _async_update_data(self) -> dict:
         """Fetch data from Trafiklab API."""
+        force, self._force_next_fetch = self._force_next_fetch, False
+        if not force and self._in_quiet_period():
+            _LOGGER.debug("Next departure is not close; keeping data from last fetch")
+            return self.data
         try:
             # Optional: evaluate update condition template from options
             update_condition_tmpl = (self.entry.options.get(CONF_UPDATE_CONDITION) or "").strip()
@@ -467,7 +543,8 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
 
         Fetching stops early when:
         - configured departure limits are already filled, or
-        - a chunk returns no items, or
+        - a chunk returns no items, unless it runs into the night gap (fetching
+          then continues from when service resumes), or
         - ``max_timetable_chunks`` is reached.
         """
         fetch_fn = (
@@ -493,10 +570,15 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
             now,
             time_window,
             night_gap=night_gap,
-        )[:max_chunks]
+        )
 
         responses: list[dict] = []
-        for query_time in query_times:
+        requests_made = 0
+        next_index = 0
+        while next_index < len(query_times) and requests_made < max_chunks:
+            query_time = query_times[next_index]
+            next_index += 1
+            requests_made += 1
             if query_time is None:
                 chunk = await fetch_fn(stop_id)
             else:
@@ -511,7 +593,13 @@ class TrafikLabCoordinator(DataUpdateCoordinator):
                 )
                 if chunk:
                     responses.append(chunk)
-                break
+                resume_index = _anchor_index_after_gap(
+                    query_times, next_index, query_time or now, night_gap
+                )
+                if resume_index is None:
+                    break
+                next_index = resume_index
+                continue
 
             responses.append(chunk)
             merged_so_far = _merge_timetable_chunks(responses, list_key)
